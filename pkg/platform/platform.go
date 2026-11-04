@@ -90,7 +90,7 @@ func Bind(c *gin.Context, v any) bool {
 	}
 	return true
 }
-func Router(db *sql.DB, r *redis.Client) *gin.Engine {
+func Router(db *sql.DB, r *redis.Client, extraReady ...func() error) *gin.Engine {
 	g := gin.New()
 	g.Use(gin.Recovery(), func(c *gin.Context) {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64<<10)
@@ -118,6 +118,12 @@ func Router(db *sql.DB, r *redis.Client) *gin.Engine {
 				return
 			}
 		}
+		for _, ready := range extraReady {
+			if ready != nil && ready() != nil {
+				c.Status(503)
+				return
+			}
+		}
 		c.Status(200)
 	})
 	return g
@@ -139,6 +145,16 @@ type Principal struct {
 var client = &http.Client{Timeout: 2 * time.Second}
 
 func Call(ctx context.Context, base, path string, in, out any) error {
+	return call(ctx, client, base, path, in, out)
+}
+
+// CallTimeout is for bounded internal operations such as settlement that need a
+// longer deadline than the default two-second authentication/profile calls.
+func CallTimeout(ctx context.Context, base, path string, in, out any, timeout time.Duration) error {
+	return call(ctx, &http.Client{Timeout: timeout}, base, path, in, out)
+}
+
+func call(ctx context.Context, client *http.Client, base, path string, in, out any) error {
 	b, err := json.Marshal(in)
 	if err != nil {
 		return err

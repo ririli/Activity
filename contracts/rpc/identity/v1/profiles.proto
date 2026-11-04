@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package activity.identity.v1;
+
+option go_package = "activity/contracts/rpc/identity/v1;identityv1";
+
+// IdentityService exposes the minimal public profile surface needed by other
+// services. It must never expose passwords, sessions, account status or assets.
+service IdentityService {
+  // BatchGetPublicProfiles returns display names for up to 100 user IDs.
+  // Unknown users are omitted. Duplicate IDs are accepted and deduplicated.
+  rpc BatchGetPublicProfiles(BatchGetPublicProfilesRequest)
+      returns (BatchGetPublicProfilesResponse);
+}
+
+message BatchGetPublicProfilesRequest {
+  // Canonical decimal user IDs. Maximum 100 unique IDs per call.
+  repeated string user_ids = 1;
+}
+
+message PublicProfile {
+  string user_id = 1;
+  // Non-empty nickname, otherwise the account name.
+  string display_name = 2;
+}
+
+message BatchGetPublicProfilesResponse {
+  repeated PublicProfile profiles = 1;
+}

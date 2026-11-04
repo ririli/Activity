@@ -3,6 +3,8 @@ import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
 import { fileURLToPath, URL } from 'node:url'
 
+const backendOrigin = 'http://localhost:8080'
+
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
   resolve: {
@@ -13,10 +15,17 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // 所有请求统一经网关代理（含鉴权 & SSE 反向代理）
+      // Same-origin proxy through Nginx. Rewrite Origin so the identity CSRF
+      // check still matches ALLOWED_ORIGIN=http://localhost:8080 while the
+      // browser itself runs on http://localhost:5173.
       '/api': {
-        target: 'http://localhost:80',
-        changeOrigin: true
+        target: backendOrigin,
+        changeOrigin: true,
+        configure(proxy: any) {
+          proxy.on('proxyReq', (request: any) => {
+            request.setHeader('Origin', backendOrigin)
+          })
+        }
       }
     }
   }

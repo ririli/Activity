@@ -1,18 +1,16 @@
 import request from './request'
 import { idempotencyOperations, withIdempotency } from './idempotency'
+import { activityEditionId, ensureActivity, loadState } from './activitySession'
 
-// ---- 资产余额 ----
 export interface AssetsResult {
   gold: number
   petals: number
 }
 
-// ---- 购买花瓣请求 ----
 export interface BuyPetalsParams {
   amount: number
 }
 
-// ---- 购买花瓣响应 ----
 export interface BuyPetalsResult {
   gold_before: number
   gold_after: number
@@ -37,44 +35,110 @@ export interface PetalShopStatusResult {
   purchased_tiers: number[]
 }
 
-// ---- 查询资产余额 ----
-export function getAssets(): Promise<AssetsResult> {
-  return request.get('/assets').then((res) => res.data)
+interface PurchaseOrder {
+  product_code: string
+  order_id: string
 }
 
-// ---- 购买花瓣（活动档位按活动价，其它数量按 amount × 60 金币） ----
+interface PurchaseResponse {
+  order_id: string
+  gold?: number
+  petals?: number
+}
+
+const TIERS = new Set(['5', '52', '525', '1580'])
+const TIER_AMOUNTS = new Set([5, 52, 525, 1580])
+
+export async function getAssets(): Promise<AssetsResult> {
+  await ensureActivity()
+  const state = await loadState()
+  return { gold: state.gold, petals: state.petals }
+}
+
+async function purchaseOrders(): Promise<PurchaseOrder[]> {
+  await ensureActivity()
+  return request.get('/activity/v1/records/purchases', {
+    params: { edition_id: activityEditionId() },
+  }).then((res) => res.data as PurchaseOrder[])
+}
+
 export function buyPetals(amount: number): Promise<BuyPetalsResult> {
   const payload = { amount }
-  return withIdempotency(idempotencyOperations.buyPetals, payload, (idempotencyKey) =>
-    request.post('/assets/buy-petals', payload, {
-      headers: { 'Idempotency-Key': idempotencyKey },
-    }).then((res) => res.data),
-  )
+  return withIdempotency(idempotencyOperations.buyPetals, payload, async (operationId) => {
+    const before = await getAssets()
+    await ensureActivity()
+    const order = await request.post('/activity/v1/purchase', {
+      edition_id: activityEditionId(),
+      operation_id: operationId,
+      product_code: TIER_AMOUNTS.has(amount) ? String(amount) : 'top-up',
+      petals: TIER_AMOUNTS.has(amount) ? undefined : amount,
+    }).then((res) => res.data as PurchaseResponse)
+    const after = order.gold !== undefined && order.petals !== undefined
+      ? { gold: order.gold, petals: order.petals }
+      : await getAssets()
+    return {
+      gold_before: before.gold,
+      gold_after: after.gold,
+      petals_before: before.petals,
+      petals_after: after.petals,
+      amount,
+      cost_gold: Math.max(0, before.gold - after.gold),
+    }
+  })
 }
 
-export function getPetalShopStatus(): Promise<PetalShopStatusResult> {
-  return request.get('/assets/petal-shop/status').then((res) => res.data)
+export async function getPetalShopStatus(): Promise<PetalShopStatusResult> {
+  const orders = await purchaseOrders()
+  return {
+    purchased_tiers: orders
+      .map((order) => order.product_code)
+      .filter((code) => TIERS.has(code))
+      .map(Number),
+  }
 }
 
-// 抽奖补差兑换，后端固定按 1 花瓣 = 60 金币结算。
 export function exchangePetals(amount: number): Promise<BuyPetalsResult> {
   const payload = { amount }
-  return withIdempotency(idempotencyOperations.exchangePetals, payload, (idempotencyKey) =>
-    request.post('/assets/exchange-petals', payload, {
-      headers: { 'Idempotency-Key': idempotencyKey },
-    }).then((res) => res.data),
-  )
+  return withIdempotency(idempotencyOperations.exchangePetals, payload, async (operationId) => {
+    const before = await getAssets()
+    await ensureActivity()
+    const order = await request.post('/activity/v1/purchase', {
+      edition_id: activityEditionId(),
+      operation_id: operationId,
+      product_code: 'top-up',
+      petals: amount,
+    }).then((res) => res.data as PurchaseResponse)
+    const after = order.gold !== undefined && order.petals !== undefined
+      ? { gold: order.gold, petals: order.petals }
+      : await getAssets()
+    return {
+      gold_before: before.gold,
+      gold_after: after.gold,
+      petals_before: before.petals,
+      petals_after: after.petals,
+      amount,
+      cost_gold: Math.max(0, before.gold - after.gold),
+    }
+  })
 }
 
-export function getPetalGiftStatus(): Promise<PetalGiftStatusResult> {
-  return request.get('/assets/petal-gift/status').then((res) => res.data)
+export async function getPetalGiftStatus(): Promise<PetalGiftStatusResult> {
+  const orders = await purchaseOrders()
+  const purchased = orders.some((order) => order.product_code === 'gift')
+  return { available: !purchased, purchased }
 }
 
 export function purchasePetalGift(): Promise<PurchasePetalGiftResult> {
-  const payload = {}
-  return withIdempotency(idempotencyOperations.petalGiftPurchase, payload, (idempotencyKey) =>
-    request.post('/assets/petal-gift/purchase', payload, {
-      headers: { 'Idempotency-Key': idempotencyKey },
-    }).then((res) => res.data),
+  return withIdempotency(idempotencyOperations.petalGiftPurchase, {}, (operationId) =>
+    ensureActivity()
+      .then(() => request.post('/activity/v1/purchase', {
+        edition_id: activityEditionId(),
+        operation_id: operationId,
+        product_code: 'gift',
+      }))
+      .then(async () => {
+        const after = await getAssets()
+        return { amount: 100, price_yuan: 0, petals_after: after.petals }
+      }),
   )
 }

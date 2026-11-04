@@ -289,7 +289,7 @@ const firstPlace = computed(() => top20.value[0] ?? null)
 const secondPlace = computed(() => top20.value[1] ?? null)
 const thirdPlace = computed(() => top20.value[2] ?? null)
 const restList = computed(() => top20.value.slice(3))
-const currentNickname = computed(() => authStore.nickname || authStore.user?.username || '我')
+const currentNickname = computed(() => authStore.nickname || '我')
 const isCurrentUserRanked = computed(() => {
   const rank = myRank.value?.rank
   return typeof rank === 'number' && rank >= 1 && rank <= 20

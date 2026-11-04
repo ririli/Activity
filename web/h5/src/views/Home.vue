@@ -508,6 +508,7 @@ import {
   type RingMarqueeItem,
 } from '@/api/activity'
 import { startNewRound } from '@/api/flower'
+import { clearRecordCaches } from '@/api/records'
 import {
   confirmDrawChoice,
   draw,
@@ -658,8 +659,8 @@ const currentMarquee = ref<RingMarqueeItem | null>(null)
 const marqueeEventSource = ref<{ close: () => void } | null>(null)
 const marqueeSSEReconnectCount = ref(0)
 const marqueeSSEDegraded = ref(false)
-const queuedMarqueeIds = new Set<number>()
-const playedMarqueeIds = restorePlayedMarqueeIds()
+const queuedMarqueeIds = new Set<string>()
+let playedMarqueeIds = new Set<string>()
 const petals = ref(0)
 const gold = ref(0)
 const progressNodes = ref<ProgressNode[]>([])
@@ -698,7 +699,7 @@ const currentShortage = ref(0)
 const showConfirm = ref(true)
 const skipAnim = ref(false)
 const tryBeforePayAvailable = ref(false)
-const tryBeforePaySessionId = ref<number | null>(null)
+const tryBeforePaySessionId = ref<string | null>(null)
 const tryBeforePayPreview = ref<TryBeforePayPreview | null>(null)
 const isTryBeforePayLoading = ref(false)
 const isTryBeforePayConfirming = ref(false)
@@ -740,7 +741,7 @@ const activeSummonStatus = computed<BoxStatusResponse | null>(() => {
       flow_state: 'choice',
       pending_reward: {
         box_id: drawChoice.reward_record_id,
-        chance_index: drawChoice.reward_record_id,
+        chance_index: 1,
         item_id: drawChoice.item_id,
         item_name: drawChoice.item_name,
         is_choice: true,
@@ -1133,6 +1134,7 @@ async function handleClaimStageReward(slotIndex: number) {
 	if (!ensureActivityActive()) return
   try {
     const result = await claimStageReward(slotIndex)
+    clearRecordCaches()
     await Promise.all([loadStageRewards(), fetchAssets()])
     if (result.pending_choice) stagePendingChoice.value = result.pending_choice
     else stageRewardResult.value = result
@@ -1145,14 +1147,14 @@ async function handleRefresh() {
   if (isRefreshing.value) return
   isRefreshing.value = true
   await loadActivityStatus()
-  await Promise.all([
-    fetchAssets(),
-    loadPools(),
-    loadStageRewards(),
-    loadTryBeforePayStatus(true),
-    loadBoxStatus(true),
-    loadPendingDrawChoices(true),
-  ])
+  // Load pool costs before showing draw/TBP entry points; the buttons stay
+  // disabled while currentCostPerDraw is zero.
+  await loadPools()
+  await fetchAssets()
+  await loadBoxStatus(true)
+  await loadStageRewards()
+  await loadPendingDrawChoices(true)
+  await loadTryBeforePayStatus(true)
   // 重连 SSE 以获取最新弹幕
   disconnectMarqueeSSE()
   connectMarqueeSSE()
@@ -1172,16 +1174,29 @@ function connectMarqueeSSE() {
   marqueeSSEDegraded.value = false
 
   const client = createAuthSSE(
-    '/api/v1/activity/marquee/stream',
+    '/api/notification/v1/barrage/stream',
     getToken,
     {
       onOpen: () => {
         marqueeSSEReconnectCount.value = 0
         marqueeSSEDegraded.value = false
       },
-      onMessage: (data: string) => {
+      onEvent: (event: string, data: string) => {
+        if (event !== 'barrage') return
         try {
-          const item = JSON.parse(data) as RingMarqueeItem
+          const payload = JSON.parse(data) as {
+            message_id?: string
+            display_name?: string
+            item_name?: string
+            quantity?: number
+          }
+          if (!payload.message_id) return
+          const item: RingMarqueeItem = {
+            id: payload.message_id,
+            nickname: payload.display_name || '用户',
+            item_name: payload.item_name || '',
+            obtained_at: new Date().toISOString(),
+          }
           // 去重：已播放或已在队列中的忽略
           if (playedMarqueeIds.has(item.id) || queuedMarqueeIds.has(item.id)) return
           // 队列过载保护
@@ -1193,6 +1208,19 @@ function connectMarqueeSSE() {
         } catch {
           // 解析失败，跳过
         }
+      },
+      onAuthRequired: () => {
+        marqueeEventSource.value?.close()
+        marqueeEventSource.value = null
+        void (async () => {
+          if (await authStore.refreshSession()) connectMarqueeSSE()
+          else router.replace('/login')
+        })()
+      },
+      onUnavailable: () => {
+        marqueeSSEDegraded.value = true
+        marqueeEventSource.value?.close()
+        marqueeEventSource.value = null
       },
       onError: (reconnectCount: number) => {
         marqueeSSEReconnectCount.value = reconnectCount
@@ -1215,24 +1243,24 @@ function disconnectMarqueeSSE() {
   marqueeSSEDegraded.value = false
 }
 
-function restorePlayedMarqueeIds() {
-  const sessionID = authStore.token?.slice(-16) ?? ''
-  if (!sessionID) return new Set<number>()
+function restorePlayedMarqueeIds(): Set<string> {
+  const sessionID = authStore.user?.user_id ?? ''
+  if (!sessionID) return new Set<string>()
 
   try {
     const stored = JSON.parse(localStorage.getItem(MARQUEE_PLAYED_STORAGE_KEY) ?? '{}') as {
       session_id?: string
-      ids?: number[]
+      ids?: string[]
     }
-    if (stored.session_id !== sessionID || !Array.isArray(stored.ids)) return new Set<number>()
-    return new Set(stored.ids.filter((id) => Number.isInteger(id)))
+    if (stored.session_id !== sessionID || !Array.isArray(stored.ids)) return new Set<string>()
+    return new Set(stored.ids.filter((id) => typeof id === 'string'))
   } catch {
-    return new Set<number>()
+    return new Set<string>()
   }
 }
 
 function persistPlayedMarqueeIds() {
-  const sessionID = authStore.token?.slice(-16) ?? ''
+  const sessionID = authStore.user?.user_id ?? ''
   if (!sessionID) return
 
   try {
@@ -1291,6 +1319,7 @@ async function executeDraw(poolType: number, count: number) {
       animation,
     ])
     drawResult.value = result
+    clearRecordCaches()
     playActivityEffect('reward')
     await Promise.all([fetchAssets(), loadStageRewards(), loadTryBeforePayStatus()])
   } catch (error: unknown) {
@@ -1508,6 +1537,7 @@ async function handleConfirmBox(selectedItemId: number) {
   isConfirmingBox.value = true
   try {
     const result = await confirmBox(chanceIndex, selectedItemId)
+    clearRecordCaches()
     await Promise.all([loadBoxStatus(true), loadStageRewards(), fetchAssets()])
     if (isTrueLoveRing(result.item_id)) showTrueLoveAcquired(result.item_id, result.item_name)
     else showToast(`已获得 ${result.item_name}`)
@@ -1526,6 +1556,7 @@ async function handleConfirmStageChoice(selectedItemId: number) {
   isConfirmingStageChoice.value = true
   try {
     const result = await confirmStageRewardChoice(pending.reward_record_id, selectedItemId)
+    clearRecordCaches()
     stagePendingChoice.value = null
     await loadStageRewards()
     showTrueLoveAcquired(result.item_id, result.item_name)
@@ -1544,6 +1575,7 @@ async function handleConfirmDrawChoice(selectedItemId: number) {
   isConfirmingDrawChoice.value = true
   try {
     const result = await confirmDrawChoice(pending.reward_record_id, selectedItemId)
+    clearRecordCaches()
     drawPendingChoices.value.shift()
     if (drawPendingChoices.value.length === 0 && drawFlowAfterChoices.value) {
       const drawResultToContinue = drawFlowAfterChoices.value
@@ -1614,6 +1646,7 @@ async function handleStartNewRound() {
   isStartingNewRound.value = true
   try {
     const result = await startNewRound()
+    clearRecordCaches()
     await Promise.all([loadStageRewards(), loadBoxStatus(true, false)])
     showToast(`已开始第${result.round_number}轮`)
   } catch (error: unknown) {
@@ -1736,6 +1769,7 @@ async function onTryBeforePayConfirm() {
   try {
     const preview = tryBeforePayPreview.value
     await confirmTryBeforePay()
+    clearRecordCaches()
     await Promise.all([
       fetchAssets(),
       loadStageRewards(),
@@ -1800,20 +1834,20 @@ onMounted(async () => {
       return
     }
   }
+  playedMarqueeIds = restorePlayedMarqueeIds()
+  queuedMarqueeIds.clear()
 
   await loadActivityStatus(true)
   document.addEventListener('visibilitychange', handleVisibilityChange)
   // 建立 SSE 长连接，代替轮询
   connectMarqueeSSE()
-  await Promise.all([
-    fetchAssets(),
-    loadPools(),
-    loadStageRewards(),
-    loadTryBeforePayStatus(),
-    loadBoxStatus(true),
-    loadPetalGiftStatus(),
-    loadPendingDrawChoices(true),
-  ])
+  await loadPools()
+  await fetchAssets()
+  await loadBoxStatus(true)
+  await loadStageRewards()
+  await loadPendingDrawChoices(true)
+  await loadTryBeforePayStatus()
+  await loadPetalGiftStatus()
   if (activityActive.value && !showTryBeforePay.value) showNewRingBenefitOnFirstVisit()
 })
 </script>

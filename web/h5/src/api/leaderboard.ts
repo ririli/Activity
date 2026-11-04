@@ -1,28 +1,60 @@
 import request from './request'
+import { activityEditionId, ensureActivity } from './activitySession'
 
-// ---- 排行榜单项（后台 JSON tag: top_20） ----
 export interface RankingItem {
   rank: number
-  user_id: number
+  user_id: string
   nickname: string
   score: number
   achieved_at: string
 }
 
-// ---- 当前用户排名信息（后台 JSON tag: current_user） ----
 export interface UserRank {
   rank: number
   score: number
   achieved_at: string
 }
 
-// ---- 排行榜接口响应 ----
 export interface RankingResponse {
   top_20: RankingItem[]
   current_user: UserRank | null
 }
 
-// ---- 获取排行榜（Top20 + 当前用户排名） ----
-export function fetchRanking(): Promise<RankingResponse> {
-  return request.get('/ranking').then((res) => res.data)
+interface BackendEntry {
+  user_id: string
+  nickname: string
+  score: number
+  score_reached_at_sec: number
+  rank: number
+}
+
+interface BackendBoard {
+  top: BackendEntry[]
+  me: BackendEntry | null
+  source: string
+}
+
+function achievedAt(seconds: number): string {
+  if (!seconds) return ''
+  return new Date(seconds * 1000).toISOString()
+}
+
+export async function fetchRanking(): Promise<RankingResponse> {
+  await ensureActivity()
+  const board = await request.get('/ranking/v1/board', {
+    params: { edition_id: activityEditionId() },
+  }).then((res) => res.data as BackendBoard)
+  const current = board.me
+  return {
+    top_20: (board.top ?? []).map((entry) => ({
+      rank: entry.rank,
+      user_id: entry.user_id,
+      nickname: entry.nickname,
+      score: entry.score,
+      achieved_at: achievedAt(entry.score_reached_at_sec),
+    })),
+    current_user: current
+      ? { rank: current.rank, score: current.score, achieved_at: achievedAt(current.score_reached_at_sec) }
+      : null,
+  }
 }

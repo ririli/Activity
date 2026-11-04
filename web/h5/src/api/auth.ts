@@ -1,64 +1,57 @@
-import request from './request'
+import request, { refreshAccessToken } from './request'
 
-// 登录请求
 export interface LoginParams {
-  username: string
+  account: string
   password: string
 }
 
-// 注册请求
 export interface RegisterParams {
-  username: string
+  account: string
   password: string
   nickname?: string
 }
 
-// 认证返回（登录/注册/刷新 共用）
+// Login/register return only the Access token; Refresh is an HttpOnly cookie.
 export interface AuthResult {
   access_token: string
-  refresh_token: string
-  expires_in: number  // access token 剩余有效秒数
-  user_id: number
-  username: string
+  user_id: string
   nickname: string
-  role: number  // 0=普通用户, 1=管理员
 }
 
-// 用户资料
 export interface ProfileResult {
-  user_id: number
-  username: string
+  user_id: string
+  session_id: string
   nickname: string
-  role: number  // 0=普通用户, 1=管理员
 }
 
-// 资产余额
-export interface BalanceResult {
-  gold: number
-  petals: number
-}
-
-// 登录
 export function login(params: LoginParams): Promise<AuthResult> {
-  return request.post('/auth/login', params).then((res) => res.data)
+  return request.post('/identity/v1/auth/login', params).then((res) => res.data as AuthResult)
 }
 
-// 注册
 export function register(params: RegisterParams): Promise<AuthResult> {
-  return request.post('/auth/register', params).then((res) => res.data)
+  return request.post('/identity/v1/auth/register', params).then((res) => res.data as AuthResult)
 }
 
-// 刷新令牌
-export function refreshTokens(refreshToken: string): Promise<AuthResult> {
-  return request.post('/auth/refresh', { refresh_token: refreshToken }).then((res) => res.data)
-}
-
-// 获取用户资料
 export function getProfile(): Promise<ProfileResult> {
-  return request.get('/auth/profile').then((res) => res.data)
+  return request.get('/identity/v1/me').then((res) => res.data as ProfileResult)
 }
 
-// 退出登录（传入 refresh_token 供服务端清理）
-export function logout(refreshToken?: string): Promise<void> {
-  return request.post('/auth/logout', { refresh_token: refreshToken || '' })
+// Restores the in-memory Access token from the HttpOnly Refresh cookie. Used on
+// every page load because no token survives a reload in persistent storage.
+export async function restoreSession(): Promise<AuthResult | null> {
+  const token = await refreshAccessToken()
+  if (!token) return null
+  const profile = await getProfile()
+  return {
+    access_token: token,
+    user_id: profile.user_id,
+    nickname: profile.nickname,
+  }
+}
+
+export function logout(): Promise<void> {
+  return request.post('/identity/v1/auth/logout', undefined, {
+    headers: { 'X-Activity-CSRF': '1' },
+    withCredentials: true,
+  }).then(() => undefined)
 }

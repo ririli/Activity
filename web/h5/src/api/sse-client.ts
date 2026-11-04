@@ -1,46 +1,62 @@
 import { fetchEventSource } from '@microsoft/fetch-event-source'
 
+export interface AuthSSECallbacks {
+  onOpen?: () => void
+  onEvent?: (event: string, data: string) => void
+  onAuthRequired?: () => void
+  onUnavailable?: () => void
+  onError?: (reconnectCount: number) => void
+  onReconnectMax?: () => void
+}
+
 /**
- * 创建带鉴权的 SSE 连接（替代不支持自定义 Header 的 EventSource）。
- *
- * 使用 @microsoft/fetch-event-source 库，底层基于 fetch + ReadableStream，
- * 支持 Authorization 头等原生 EventSource 不具备的能力。
- *
- * @param url          SSE 端点地址
- * @param getToken     获取最新 token 的函数，每次连接（包括重连）前调用
- * @param callbacks    事件回调
- * @param maxReconnect 最大重连次数
- * @returns { close } 用于主动断开连接
+ * SSE with Bearer auth via fetch. Control events (ready/auth_required/
+ * unavailable) are surfaced separately from barrage data; the caller owns the
+ * auth refresh and reconnect policy.
  */
 export function createAuthSSE(
   url: string,
   getToken: () => string | null,
-  callbacks: {
-    onOpen?: () => void
-    onMessage: (data: string) => void
-    onError?: (reconnectCount: number) => void
-    onReconnectMax?: () => void
-  },
-  maxReconnect = 5
+  callbacks: AuthSSECallbacks,
+  maxReconnect = 5,
 ): { close: () => void } {
-  const controller = new AbortController()
+  let controller = new AbortController()
+  let stopped = false
+  let intentional = false
   let reconnectCount = 0
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
-  function connect() {
-    // 每次连接前获取最新 token，避免重连时使用已过期的旧 token
-    const token = getToken()
-    if (!token) {
+  function retry(error: unknown) {
+    if (intentional || stopped) return
+    reconnectCount += 1
+    callbacks.onError?.(reconnectCount)
+    if (reconnectCount >= maxReconnect) {
       callbacks.onReconnectMax?.()
       return
     }
+    if (reconnectTimer !== null) return
+    const delay = Math.min(1000 * Math.pow(2, reconnectCount - 1), 30000)
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null
+      connect()
+    }, delay)
+    throw error
+  }
 
+  function connect() {
+    if (stopped) return
+    const token = getToken()
+    if (!token) {
+      callbacks.onAuthRequired?.()
+      return
+    }
+    intentional = false
+    controller = new AbortController()
+    const current = controller
     fetchEventSource(url, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-      signal: controller.signal,
-      openWhenHidden: true, // 页面切后台时保持连接
+      headers: { Authorization: `Bearer ${token}` },
+      signal: current.signal,
+      openWhenHidden: true,
 
       onopen: async (response) => {
         if (response.ok && response.headers.get('content-type')?.includes('text/event-stream')) {
@@ -48,36 +64,52 @@ export function createAuthSSE(
           callbacks.onOpen?.()
           return
         }
-        // 非 SSE 响应，抛错触发重连
+        if (response.status === 401) {
+          intentional = true
+          callbacks.onAuthRequired?.()
+          current.abort()
+          return
+        }
         throw new Error(`SSE 连接失败: HTTP ${response.status}`)
       },
 
       onmessage: (event) => {
-        if (event.data) {
-          callbacks.onMessage(event.data)
+        const type = event.event || 'barrage'
+        if (type === 'ready') {
+          reconnectCount = 0
+          callbacks.onOpen?.()
+          return
         }
+        if (type === 'auth_required') {
+          intentional = true
+          callbacks.onAuthRequired?.()
+          current.abort()
+          return
+        }
+        if (type === 'unavailable') {
+          intentional = true
+          callbacks.onUnavailable?.()
+          current.abort()
+          return
+        }
+        if (event.data) callbacks.onEvent?.(type, event.data)
       },
 
       onclose: () => {
-        // 服务端主动关闭连接（正常情况不触发）
-      },
-
-      onerror: (err) => {
-        reconnectCount++
-        callbacks.onError?.(reconnectCount)
-
-        if (reconnectCount >= maxReconnect) {
-          callbacks.onReconnectMax?.()
-          controller.abort()
-          throw err // 不再重试
+        if (!stopped && !intentional) {
+          intentional = true
+          current.abort()
+          intentional = false
+          retry(new Error('SSE closed'))
         }
-
-        // 手动管理重连：抛弃库的默认重试，自己用指数退避 + 每次拿最新 token
-        // 这样可以保证即使 access token 过期且已被刷新，重连使用的是新 token
-        const delay = Math.min(1000 * Math.pow(2, reconnectCount - 1), 30000)
-        reconnectTimer = setTimeout(connect, delay)
-        throw err // 阻止库的默认重试，使用我们自己的重连逻辑
       },
+
+      onerror: (error) => {
+        if (intentional || stopped) return
+        retry(error)
+      },
+    }).catch(() => {
+      // Errors are classified by retry/control-event callbacks above.
     })
   }
 
@@ -85,8 +117,13 @@ export function createAuthSSE(
 
   return {
     close: () => {
+      stopped = true
+      intentional = true
       controller.abort()
-      if (reconnectTimer != null) clearTimeout(reconnectTimer)
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer)
+        reconnectTimer = null
+      }
     },
   }
 }

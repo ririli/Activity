@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { getToken } from '@/api/request'
+import { useAuthStore } from '@/stores/auth'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -24,24 +24,21 @@ const router = createRouter({
   ]
 })
 
-// 路由守卫：未登录时重定向到登录页
-router.beforeEach((to, _from, next) => {
+// Access lives in memory, so a page reload must restore it from the HttpOnly
+// Refresh cookie before deciding whether a route is authorized.
+router.beforeEach(async (to) => {
+  const auth = useAuthStore()
   if (to.meta.requiresAuth) {
-    const token = getToken()
-    if (!token) {
-      next({ name: 'Login', query: { redirect: to.fullPath } })
-      return
+    const ok = await auth.initFromStorage()
+    if (!ok) {
+      return { name: 'Login', query: { redirect: to.fullPath } }
     }
   }
-  // 已登录用户访问登录页 → 重定向到首页
   if (to.name === 'Login') {
-    const token = getToken()
-    if (token) {
-      next({ name: 'Home' })
-      return
-    }
+    const ok = await auth.initFromStorage()
+    if (ok) return { name: 'Home' }
   }
-  next()
+  return true
 })
 
 export default router

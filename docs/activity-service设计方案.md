@@ -1,6 +1,8 @@
 # activity-service 活动核心设计方案
 
-日期：2026-11-04。状态：待实施设计；仅新增文档，不编写业务实现，不修改或执行 DDL，未做运行验证或容量承诺。
+日期：2026-11-04。状态：主体已实现；2026-11-05 完成三上下文应用层拆分与批量/结算实现。
+
+> 实施说明（2026-11-05）：购买、抽奖、预览、阶段、宝箱、选款、下一轮、逐用户结算已从 MySQL 适配器迁入 `assets/application`、`lottery/application`、`participation/application`；`internal/application.Service` 负责事务、用户锁、幂等恢复和提交后效果，`uow` 提供事务端口，`appstate` 保留事务态持久化原语。MySQL 适配器只保留读取、Bootstrap、任务租约 SQL、排名投影与 Pub/Sub 发布。实现与验收以 [后端实现与验收](后端实现与验收.md) 为准。
 
 依据：[业务需求 V1.2](Lottery业务需求文档（不含后台）.md)、[持久层 V2](持久层设计方案V2.md)、现有核心库迁移，以及 [identity 方案](identity-service实现方案.md)、[ranking 方案](ranking-service设计方案.md)、[notification 方案](notification-service设计方案.md)。发生差异时，下文明确指出设计增补，不能把建议当成已实现能力。
 

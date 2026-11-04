@@ -1,8 +1,10 @@
 # identity-service 技术选型与实现方案
 
 日期：2026-11-04  
-状态：待实施的详细设计；本轮仅生成文档，不初始化模块、不安装依赖、不修改或执行 DDL。  
+状态：核心认证方案已实现；2026-11-05 追加实现 Redis 撤销黑名单、BigCache 负缓存与资料 gRPC。
 依据：[业务需求 V1.2](Lottery业务需求文档（不含后台）.md)、[持久层设计 V2](持久层设计方案V2.md)及现有 `services/identity-service/migrations/001_initial.sql`。本文补充认证实现细节，不变更已确定的业务边界。
+
+> 实施说明（2026-11-05）：鉴权 introspect 仍走内部 HTTP；昵称资料查询已改为 gRPC `BatchGetPublicProfiles`（独立 `GRPC_ADDR`、内部 token 元数据），原 HTTP `/internal/identity/v1/profiles` 已删除。RevocationStore 的 Redis key/TTL、BigCache 参数与严格校验顺序按第 6 节实现；Redis 故障时既有 Access 校验退回 MySQL，退出仍以 MySQL 提交为准。实现与验证状态以 [后端实现与验收](后端实现与验收.md) 为准。
 
 ## 1. 方案结论
 

@@ -422,7 +422,7 @@ async function handleLogin() {
 
   loginLoading.value = true
   try {
-    await authStore.login({ username: loginForm.username.trim(), password: loginForm.password })
+    await authStore.login({ account: loginForm.username.trim(), password: loginForm.password })
     successType.value = 'login'; showSuccess.value = true
     setTimeout(() => goHome(), 1200)
   } catch (err: any) {
@@ -454,7 +454,7 @@ async function handleRegister() {
   registerLoading.value = true
   try {
     await authStore.register({
-      username: registerForm.username.trim(),
+      account: registerForm.username.trim(),
       password: registerForm.password,
       nickname: registerForm.nickname.trim() || undefined
     })

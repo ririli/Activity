@@ -3,6 +3,7 @@ package mysql
 import (
 	"activity/pkg/platform"
 	"activity/services/ranking-service/internal/ranking/domain"
+	cache "activity/services/ranking-service/internal/ranking/infrastructure/redis"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 type Repository struct {
 	DB    *sql.DB
 	Redis *redis.Client
+	Cache *cache.Cache
 }
 
 func number(s string) (int64, error) {
@@ -44,6 +46,22 @@ func (r *Repository) Consume(ctx context.Context, ev platform.Event) error {
 		return e
 	}
 	defer tx.Rollback()
+	var seen int
+	if e = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM inbox_event WHERE consumer_name='ranking-facts' AND event_id=?`, ev.ID).Scan(&seen); e != nil {
+		return e
+	}
+	if seen > 0 {
+		// Replayed events stay idempotent even after the settlement freezes.
+		return tx.Commit()
+	}
+	var settlementStatus string
+	e = tx.QueryRowContext(ctx, `SELECT status FROM ranking_settlement WHERE edition_id=?`, f.Edition).Scan(&settlementStatus)
+	if e != nil && !errors.Is(e, sql.ErrNoRows) {
+		return e
+	}
+	if settlementStatus == "FROZEN" || settlementStatus == "AWARDING" || settlementStatus == "COMPLETED" {
+		return platform.Fail(409, "SETTLEMENT_FROZEN")
+	}
 	created, ce := number(f.Created)
 	if ev.Type == "FormalDrawCommitted.v1" {
 		created, ce = number(f.Occurred)
@@ -60,6 +78,7 @@ func (r *Repository) Consume(ctx context.Context, ev platform.Event) error {
 	if e != nil {
 		return e
 	}
+	priorScore := score
 	if ev.Type == "FormalDrawCommitted.v1" {
 		n, e := number(f.Seq)
 		if e != nil || n == 0 {
@@ -119,67 +138,64 @@ func (r *Repository) Consume(ctx context.Context, ev platform.Event) error {
 	if e != nil {
 		return e
 	}
-	return tx.Commit()
+	if e = tx.Commit(); e != nil {
+		return e
+	}
+	return r.cacheUpdate(ctx, ev, priorScore > 0)
 }
 
-type Entry struct {
-	User     string `json:"user_id"`
-	Score    int64  `json:"score"`
-	Reached  int64  `json:"score_reached_at_sec"`
-	Rank     int64  `json:"rank"`
-	Nickname string `json:"nickname"`
-}
+type Entry = domain.Entry
 
-func (r *Repository) Board(ctx context.Context, edition, user string) (any, error) {
+func (r *Repository) Board(ctx context.Context, edition, user string) (domain.Board, error) {
+	if r.Cache != nil {
+		if b, e := r.Cache.Board(ctx, edition, user); e == nil {
+			var users, mine int64
+			if e = r.DB.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(user_id=?),0) FROM ranking_entry WHERE edition_id=?`, user, edition).Scan(&users, &mine); e == nil && b.Count >= users && (mine == 0 || b.Me != nil) {
+				return domain.Board{Top: b.Top, Me: b.Me, Source: "redis"}, nil
+			}
+		}
+	}
 	tx, e := r.DB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if e != nil {
-		return nil, e
+		return domain.Board{}, e
 	}
 	defer tx.Rollback()
 	rows, e := tx.QueryContext(ctx, `SELECT CAST(user_id AS CHAR),score,score_reached_at_sec FROM ranking_entry WHERE edition_id=? ORDER BY score DESC,score_reached_at_sec,user_id LIMIT 20`, edition)
 	if e != nil {
-		return nil, e
+		return domain.Board{}, e
 	}
 	top := []Entry{}
-	ids := []string{user}
 	for rows.Next() {
 		var v Entry
 		if e = rows.Scan(&v.User, &v.Score, &v.Reached); e != nil {
 			rows.Close()
-			return nil, e
+			return domain.Board{}, e
 		}
 		v.Rank = int64(len(top) + 1)
 		top = append(top, v)
-		ids = append(ids, v.User)
 	}
 	e = rows.Err()
 	rows.Close()
 	if e != nil {
-		return nil, e
+		return domain.Board{}, e
 	}
 	var me Entry
 	me.User = user
 	e = tx.QueryRowContext(ctx, `SELECT score,score_reached_at_sec FROM ranking_entry WHERE edition_id=? AND user_id=?`, edition, user).Scan(&me.Score, &me.Reached)
-	var mine any
+	var mine *Entry
 	if e == nil {
 		e = tx.QueryRowContext(ctx, `SELECT COUNT(*)+1 FROM ranking_entry WHERE edition_id=? AND (score>? OR(score=? AND score_reached_at_sec<?) OR(score=? AND score_reached_at_sec=? AND user_id<?))`, edition, me.Score, me.Score, me.Reached, me.Score, me.Reached, user).Scan(&me.Rank)
 		if e != nil {
-			return nil, e
+			return domain.Board{}, e
 		}
 		mine = &me
 	} else if !errors.Is(e, sql.ErrNoRows) {
-		return nil, e
+		return domain.Board{}, e
 	}
 	if e = tx.Commit(); e != nil {
-		return nil, e
+		return domain.Board{}, e
 	}
-	profiles := map[string]string{}
-	_ = platform.Call(ctx, platform.Env("IDENTITY_URL", "http://localhost:8081"), "/internal/identity/v1/profiles", map[string]any{"ids": ids}, &profiles)
-	for i := range top {
-		top[i].Nickname = profiles[top[i].User]
-	}
-	me.Nickname = profiles[user]
-	return map[string]any{"top": top, "me": mine, "source": "mysql"}, nil
+	return domain.Board{Top: top, Me: mine, Source: "mysql"}, nil
 }
 func (r *Repository) receipt(ctx context.Context, ev platform.Event) error {
 	var p struct {

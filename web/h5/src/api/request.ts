@@ -2,178 +2,200 @@ import axios from 'axios'
 import { showDialog, showToast } from 'vant'
 import { clearPendingIdempotencyKeys } from './idempotency'
 
-// —— Token 存储键 ——
-const ACCESS_TOKEN_KEY = 'lottery_access_token'
-const REFRESH_TOKEN_KEY = 'lottery_refresh_token'
+// Access is intentionally memory-only. The rotating Refresh token is an
+// HttpOnly cookie managed by identity-service, never readable by JavaScript.
+let accessToken: string | null = null
+let refreshPromise: Promise<string> | null = null
 
-// —— Token 读写工具函数 ——
+const LEGACY_ACCESS_KEY = 'lottery_access_token'
+const LEGACY_REFRESH_KEY = 'lottery_refresh_token'
+const REFRESH_LOCK_KEY = 'activity_refresh_lock'
+const AUTH_PREFIX = '/identity/v1/auth/'
+
+function browserStorage(): Storage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage
+  } catch {
+    return null
+  }
+}
+
+// Remove the old protocol's persisted tokens once; users without the new
+// HttpOnly cookie simply go through the login page.
+const legacyStorage = browserStorage()
+legacyStorage?.removeItem(LEGACY_ACCESS_KEY)
+legacyStorage?.removeItem(LEGACY_REFRESH_KEY)
+
 export function getAccessToken(): string | null {
-  return localStorage.getItem(ACCESS_TOKEN_KEY)
+  return accessToken
 }
 
-export function getRefreshToken(): string | null {
-  return localStorage.getItem(REFRESH_TOKEN_KEY)
-}
-
-export function setTokens(accessToken: string, refreshToken: string): void {
-  clearPendingIdempotencyKeys()
-  localStorage.setItem(ACCESS_TOKEN_KEY, accessToken)
-  localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken)
-}
-
-export function clearTokens(): void {
-  localStorage.removeItem(ACCESS_TOKEN_KEY)
-  localStorage.removeItem(REFRESH_TOKEN_KEY)
-  clearPendingIdempotencyKeys()
-}
-
-// 向后兼容：旧代码中 getToken 返回 access token
+// Backward-compatible alias used by the router and existing views.
 export function getToken(): string | null {
-  return getAccessToken()
+  return accessToken
 }
 
-// 创建 Axios 实例
+export function setAccessToken(token: string | null): void {
+  accessToken = token
+}
+
+export function clearSession(): void {
+  accessToken = null
+  clearPendingIdempotencyKeys()
+  browserStorage()?.removeItem(LEGACY_ACCESS_KEY)
+  browserStorage()?.removeItem(LEGACY_REFRESH_KEY)
+}
+
+type LockManagerLike = {
+  request<T>(name: string, callback: () => Promise<T>): Promise<T>
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function withRefreshLock<T>(callback: () => Promise<T>): Promise<T> {
+  const locks = (typeof navigator !== 'undefined'
+    ? (navigator as Navigator & { locks?: LockManagerLike }).locks
+    : undefined)
+  if (locks?.request) {
+    return locks.request('activity-refresh', callback)
+  }
+  // Fallback for browsers without Web Locks. The cookie itself is shared by
+  // all tabs; the lock only prevents concurrent refresh rotations.
+  const storage = browserStorage()
+  if (!storage) return callback()
+  const owner = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (storage.getItem(REFRESH_LOCK_KEY) === null) {
+      storage.setItem(REFRESH_LOCK_KEY, owner)
+      try {
+        return await callback()
+      } finally {
+        if (storage.getItem(REFRESH_LOCK_KEY) === owner) storage.removeItem(REFRESH_LOCK_KEY)
+      }
+    }
+    await sleep(50)
+  }
+  return callback()
+}
+
+// Exchanges the HttpOnly Refresh cookie for a new Access token. This is also
+// used on page load: there is no Access token in persistent storage.
+export function refreshAccessToken(): Promise<string> {
+  if (refreshPromise) return refreshPromise
+  refreshPromise = withRefreshLock(async () => {
+    const response = await axios.post(
+      '/api/identity/v1/auth/refresh',
+      undefined,
+      {
+        headers: { 'X-Activity-CSRF': '1' },
+        withCredentials: true,
+      },
+    )
+    const token = (response.data as { access_token?: string }).access_token
+    if (!token) throw new Error('登录状态刷新失败')
+    accessToken = token
+    return token
+  }).finally(() => {
+    refreshPromise = null
+  })
+  return refreshPromise
+}
+
 const request = axios.create({
-  baseURL: '/api/v1',
+  baseURL: '/api',
   timeout: 10000,
-  headers: { 'Content-Type': 'application/json' }
+  headers: { 'Content-Type': 'application/json' },
+  withCredentials: true,
 })
 
-// 请求拦截器：自动附加 access token
-request.interceptors.request.use(
-  (config) => {
-    const token = getAccessToken()
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`
-    }
-    return config
-  },
-  (error) => Promise.reject(error)
-)
+request.interceptors.request.use((config) => {
+  if (accessToken) config.headers.Authorization = `Bearer ${accessToken}`
+  return config
+})
 
-// —— 并发刷新竞态控制 ——
-let isRefreshing = false
-let refreshSubscribers: { resolve: (token: string) => void; reject: (error: unknown) => void }[] = []
-
-function onRefreshed(token: string) {
-  refreshSubscribers.forEach(({ resolve }) => resolve(token))
-  refreshSubscribers = []
+const ERROR_TEXT: Record<string, string> = {
+  INVALID_REQUEST: '请求参数不正确',
+  INVALID_TOKEN: '登录状态已失效，请重新登录',
+  INVALID_SESSION: '会话已失效，请重新登录',
+  INVALID_REFRESH: '登录状态已过期，请重新登录',
+  INVALID_CREDENTIALS: '账号或密码错误',
+  ACCOUNT_EXISTS: '账号已存在',
+  RATE_LIMITED: '操作过于频繁，请稍后重试',
+  LOGIN_LIMITED: '登录失败次数过多，请稍后重试',
+  OPERATION_IN_PROGRESS: '操作进行中，请稍后重试',
+  OPERATION_RESULT_UNKNOWN: '处理结果未知，请使用相同操作重试',
+  ACTIVITY_NOT_ACTIVE: '活动未开始或已结束',
+  INSUFFICIENT_PETALS: '花瓣不足',
+  INSUFFICIENT_OR_OVERFLOWING_ASSET: '金币不足或花瓣不足',
+  INSUFFICIENT_GOLD: '金币不足，请先购买金币',
+  ROUND_FULL: '本轮花朵已满',
+  STAGE_NOT_REACHED: '尚未达到该阶段',
+  NO_CHEST_AVAILABLE: '暂无可开启的宝箱',
+  ALREADY_PURCHASED: '该档位已购买',
+  ACCOUNT_INITIALIZING: '账号初始化中，请稍后重试',
+  ACCOUNT_DISABLED: '账号已被禁用',
 }
 
-// 执行 token 刷新（不经过拦截器，避免死循环）
-async function doRefresh(): Promise<string> {
-  const refreshToken = getRefreshToken()
-  if (!refreshToken) {
-    throw new Error('无 refresh token')
-  }
-
-  // 用独立的 axios 实例调用 refresh，不走拦截器
-  const res = await axios.post('/api/v1/auth/refresh', {
-    refresh_token: refreshToken,
-  })
-
-  const authResult = res.data.data as {
-    access_token: string
-    refresh_token: string
-    expires_in: number
-  }
-
-  setTokens(authResult.access_token, authResult.refresh_token)
-  return authResult.access_token
+function messageFor(status: number | undefined, code: string | undefined): string {
+  if (code && ERROR_TEXT[code]) return ERROR_TEXT[code]
+  if (status === 401) return '登录状态已失效，请重新登录'
+  if (status === 403) return '请求来源校验失败'
+  if (status === 429) return '操作过于频繁，请稍后重试'
+  if (status === 503) return '服务暂时不可用，请稍后重试'
+  return code ? `请求失败：${code}` : '网络异常，请稍后重试'
 }
 
-// 清除登录状态并跳转
-function forceLogout(message: string) {
-  clearTokens()
-  showDialog({
-    title: '提示',
-    message,
-  }).then(() => {
+let loggingOut = false
+
+function forceLogout(message: string): void {
+  if (loggingOut) return
+  loggingOut = true
+  clearSession()
+  showDialog({ title: '提示', message }).then(() => {
     window.location.href = '/login'
+  }).finally(() => {
+    loggingOut = false
   })
 }
 
-// 响应拦截器：统一处理错误 + 自动刷新
+function isAuthEndpoint(url: string | undefined): boolean {
+  return !!url && url.includes(AUTH_PREFIX)
+}
+
 request.interceptors.response.use(
-  (response) => {
-    const { data } = response
-    // 业务错误
-    if (data.code !== 0) {
-      // Refresh Token 无效 → 强制重新登录
-      if (data.code === 10010) {
-        forceLogout(data.message || '刷新令牌已过期，请重新登录')
-        return Promise.reject(new Error(data.message))
-      }
-      // Access Token 无效（被黑名单等）→ 强制重新登录
-      if (data.code === 10002) {
-        forceLogout(data.message || '会话已过期，请重新登录')
-        return Promise.reject(new Error(data.message))
-      }
-      // 请求过于频繁（限流）
-      if (data.code === 60005) {
-        showToast(data.message || '请求过于频繁，请稍后再试')
-        return Promise.reject(new Error(data.message))
-      }
-      return Promise.reject(new Error(data.message))
-    }
-    return data
-  },
+  (response) => response,
   async (error) => {
-    const responseData = axios.isAxiosError(error)
-      ? (error.response?.data as { code?: number; message?: string } | undefined)
-      : undefined
+    if (!axios.isAxiosError(error)) return Promise.reject(error)
+    const status = error.response?.status
+    const code = (error.response?.data as { error?: string } | undefined)?.error
+    const original = error.config as (typeof error.config & { _retry?: boolean }) | undefined
 
-    const originalRequest = error.config
+    if (isAuthEndpoint(original?.url) && (original?.url?.includes('/login') || original?.url?.includes('/register'))) {
+      return Promise.reject(new Error(messageFor(status, code)))
+    }
 
-    // Access Token 过期（10009）→ 自动刷新
-    if (
-      responseData?.code === 10009 &&
-      originalRequest &&
-      !(originalRequest as any)._retry
-    ) {
-      // 如果已有刷新正在进行中，排队等待
-      if (isRefreshing) {
-        return new Promise((resolve, reject) => {
-          refreshSubscribers.push({ resolve: (newToken: string) => {
-            originalRequest.headers.Authorization = `Bearer ${newToken}`
-            resolve(request(originalRequest))
-          }, reject })
-        })
-      }
-
-      (originalRequest as any)._retry = true
-      isRefreshing = true
-
+    if (status === 401 && original && !original._retry && !isAuthEndpoint(original.url)) {
+      original._retry = true
       try {
-        const newToken = await doRefresh()
-        isRefreshing = false
-        onRefreshed(newToken)
-
-        // 用新 token 重试原请求
-        originalRequest.headers.Authorization = `Bearer ${newToken}`
-        return request(originalRequest)
-      } catch (refreshError) {
-        isRefreshing = false
-        refreshSubscribers.forEach(({ reject }) => reject(refreshError))
-        refreshSubscribers = []
-        forceLogout('会话已过期，请重新登录')
-        return Promise.reject(refreshError)
+        const token = await refreshAccessToken()
+        original.headers = original.headers ?? {}
+        original.headers.Authorization = `Bearer ${token}`
+        return request(original)
+      } catch {
+        forceLogout('登录状态已过期，请重新登录')
+        return Promise.reject(new Error('登录状态已过期，请重新登录'))
       }
     }
 
-    // Refresh Token 无效（10010）
-    if (responseData?.code === 10010) {
-      forceLogout(responseData.message || '刷新令牌已过期，请重新登录')
+    if (status === 401) {
+      forceLogout(messageFor(status, code))
+    } else if (status === 429) {
+      showToast(messageFor(status, code))
     }
-
-    // Token 无效（10002）
-    if (responseData?.code === 10002) {
-      forceLogout(responseData.message || '会话已过期，请重新登录')
-    }
-
-    const message = responseData?.message || error.message || '网络异常，请稍后重试'
-    return Promise.reject(new Error(message))
-  }
+    return Promise.reject(new Error(messageFor(status, code)))
+  },
 )
 
 export default request

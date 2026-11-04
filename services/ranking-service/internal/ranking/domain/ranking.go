@@ -31,3 +31,19 @@ type Fact struct {
 	Reached  string `json:"score_reached_at_sec"`
 	Created  string `json:"participation_created_at_sec"`
 }
+
+type Entry struct {
+	User     string `json:"user_id"`
+	Score    int64  `json:"score"`
+	Reached  int64  `json:"score_reached_at_sec"`
+	Rank     int64  `json:"rank"`
+	Nickname string `json:"nickname"`
+}
+
+// Board is the score/rank projection before display names are enriched by the
+// application layer.
+type Board struct {
+	Top    []Entry `json:"top"`
+	Me     *Entry  `json:"me"`
+	Source string  `json:"source"`
+}

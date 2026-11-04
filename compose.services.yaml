@@ -21,6 +21,7 @@ services:
   mysql:
     volumes:
       - ./services/activity-service/migrations/003_ranking_projection.sql:/docker-entrypoint-initdb.d/022_core_projection.sql:ro
+      - ./services/activity-service/migrations/004_settlement_scheduling.sql:/docker-entrypoint-initdb.d/023_activity_settlement.sql:ro
       - ./deploy/local/mysql/090_app_users.sql:/docker-entrypoint-initdb.d/090_users.sql:ro
   identity:
     <<: *common
@@ -34,6 +35,9 @@ services:
       REFRESH_KEY_FILE: /keys/refresh.seed
       ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-http://localhost:8080}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      GRPC_ADDR: :9090
+      REVOKE_NEGATIVE_TTL: 2s
+      REVOKE_TTL_PADDING: 30s
     volumes:
       - ./.local/keys/access.seed:/keys/access.seed:ro
       - ./.local/keys/refresh.seed:/keys/refresh.seed:ro
@@ -51,6 +55,11 @@ services:
       <<: *env
       MYSQL_DSN: ranking_app:dev-local-ranking@tcp(mysql:3306)/activity_ranking
       NODE_ID: 3
+      IDENTITY_GRPC_ADDR: identity:9090
+      PROFILE_TIMEOUT: 200ms
+      PROFILE_CACHE_TTL: 60s
+      PROFILE_CACHE_STALE_TTL: 10m
+      PROFILE_CACHE_MAX: "10000"
   notification:
     <<: *common
     build: {context: ., args: {SERVICE: notification-service}}
@@ -62,6 +71,7 @@ services:
     ports: ["127.0.0.1:${HTTP_PORT:-8080}:80"]
     volumes:
       - ./deploy/local/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./web/h5/dist:/usr/share/nginx/html:ro
     depends_on: [identity, activity, ranking, notification]
 
 

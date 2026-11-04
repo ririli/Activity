@@ -1,91 +1,103 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { login as loginApi, register as registerApi, getProfile, logout as logoutApi } from '@/api/auth'
-import { setTokens, clearTokens, getAccessToken, getRefreshToken } from '@/api/request'
+import { login as loginApi, register as registerApi, restoreSession as restoreApi, logout as logoutApi } from '@/api/auth'
+import { setAccessToken, clearSession } from '@/api/request'
+import { resetActivitySession } from '@/api/activitySession'
 import type { LoginParams, RegisterParams, AuthResult, ProfileResult } from '@/api/auth'
 
 export const useAuthStore = defineStore('auth', () => {
-  // ---- 状态 ----
-  const accessToken = ref<string | null>(getAccessToken())
-  const refreshToken = ref<string | null>(getRefreshToken())
+  const accessToken = ref<string | null>(null)
   const user = ref<ProfileResult | null>(null)
+  let restorePromise: Promise<boolean> | null = null
 
-  // ---- 计算属性 ----
   const isLoggedIn = computed(() => !!accessToken.value)
-  const nickname = computed(() => user.value?.nickname || user.value?.username || '')
-  const isAdmin = computed(() => user.value?.role === 1)
+  const nickname = computed(() => user.value?.nickname || '')
+  // The identity API no longer exposes a role; admin UI is not available.
+  const isAdmin = computed(() => false)
 
-  // 向后兼容：旧代码中 authStore.token 返回 access token
+  // Backward-compatible alias used by the SSE client and existing views.
   const token = computed(() => accessToken.value)
 
-  // ---- 方法 ----
+  function apply(result: AuthResult) {
+    accessToken.value = result.access_token
+    setAccessToken(result.access_token)
+    user.value = {
+      user_id: result.user_id,
+      session_id: '',
+      nickname: result.nickname,
+    }
+  }
 
-  // 登录
   async function login(params: LoginParams): Promise<AuthResult> {
     const result = await loginApi(params)
-    accessToken.value = result.access_token
-    refreshToken.value = result.refresh_token
-    user.value = {
-      user_id: result.user_id,
-      username: result.username,
-      nickname: result.nickname,
-      role: result.role,
-    }
-    setTokens(result.access_token, result.refresh_token)
+    apply(result)
     return result
   }
 
-  // 注册（注册后自动登录）
   async function register(params: RegisterParams): Promise<AuthResult> {
     const result = await registerApi(params)
-    accessToken.value = result.access_token
-    refreshToken.value = result.refresh_token
-    user.value = {
-      user_id: result.user_id,
-      username: result.username,
-      nickname: result.nickname,
-      role: result.role,
-    }
-    setTokens(result.access_token, result.refresh_token)
+    apply(result)
     return result
   }
 
-  // 退出登录
-  async function logout(): Promise<void> {
+  // Used by the SSE client when the server asks the browser to re-authenticate.
+  async function refreshSession(): Promise<boolean> {
     try {
-      await logoutApi(refreshToken.value || undefined)
-    } catch {
-      // 即便 API 调用失败也清除本地状态
-    }
-    accessToken.value = null
-    refreshToken.value = null
-    user.value = null
-    clearTokens()
-  }
-
-  // 从 localStorage 恢复登录状态
-  async function initFromStorage(): Promise<boolean> {
-    const savedToken = getAccessToken()
-    if (!savedToken) return false
-
-    try {
-      accessToken.value = savedToken
-      const profile = await getProfile()
-      user.value = profile
+      const result = await restoreApi()
+      if (!result) return false
+      apply(result)
       return true
     } catch {
-      // Token 无效或已过期（拦截器会处理清理和跳转）
-      accessToken.value = null
-      refreshToken.value = null
-      clearTokens()
       return false
     }
   }
 
+  async function logout(): Promise<void> {
+    try {
+      await logoutApi()
+    } catch {
+      // The server cookie is cleared on a best-effort basis; local state must
+      // still be cleared even when the session was already invalid.
+    } finally {
+      accessToken.value = null
+      user.value = null
+      clearSession()
+      resetActivitySession()
+    }
+  }
+
+  // Restores the session from the HttpOnly Refresh cookie. Concurrency-safe so
+  // the router guard, Home, and Leaderboard can all await the same refresh.
+  async function initFromStorage(): Promise<boolean> {
+    if (accessToken.value && user.value) return true
+    if (!restorePromise) {
+      restorePromise = (async () => {
+        try {
+          const result = await restoreApi()
+          if (!result) {
+            accessToken.value = null
+            user.value = null
+            clearSession()
+            return false
+          }
+          apply(result)
+          return true
+        } catch {
+          accessToken.value = null
+          user.value = null
+          clearSession()
+          return false
+        } finally {
+          restorePromise = null
+        }
+      })()
+    }
+    return restorePromise
+  }
+
   return {
     accessToken,
-    refreshToken,
-    token,        // 向后兼容
+    token,
     user,
     isLoggedIn,
     isAdmin,
@@ -94,5 +106,6 @@ export const useAuthStore = defineStore('auth', () => {
     register,
     logout,
     initFromStorage,
+    refreshSession,
   }
 })

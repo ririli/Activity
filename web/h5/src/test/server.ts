@@ -231,6 +231,7 @@ const petalTierCosts: Record<number, number> = {
   525: 30000,
   1580: 90000,
 }
+const TIER_AMOUNTS_FOR_TEST = [52, 525, 1580]
 
 function getPetalCostGold(amount: number) {
   return petalTierCosts[amount] ?? amount * 60
@@ -395,7 +396,638 @@ const rankingItems = rankingNicknames.map((nickname, index) => ({
   achieved_at: '2026-07-10T12:00:00Z',
 }))
 
+// ---------------------------------------------------------------------------
+// New-contract fixtures. The H5 adapters consume the real backend shapes, so
+// MSW returns those shapes directly (no {code,message,data} envelope).
+// ---------------------------------------------------------------------------
+
+const STAGE_CODES = [3, 5, 8, 11, 15, 17]
+const RING_CHOICES = [
+  { item_id: '1207751', name: '真爱无敌戒指经典款' },
+  { item_id: '1207752', name: '真爱无敌戒指铭文款' },
+  { item_id: '1207753', name: '爱你万年戒指铭文款' },
+]
+
+function bPrize(itemId: number, name: string, quantity = 1, choices?: Array<{ item_id: string; name: string }>) {
+  return {
+    code: String(itemId),
+    item_id: String(itemId),
+    name,
+    quantity,
+    weight: 1,
+    ...(choices ? { choices } : {}),
+  }
+}
+
+function choicePrize() {
+  return bPrize(1207751, '真爱无敌戒指选择权', 1, RING_CHOICES)
+}
+
+function stageRule(index: number) {
+  const reward = apiState.rewards[index]
+  const prize = bPrize(
+    reward?.item_id ?? 0,
+    reward?.item_name ?? '',
+    reward?.quantity ?? 1,
+    reward?.is_choice ? RING_CHOICES : undefined,
+  )
+  if (reward?.is_choice) prize.code = 'TRUE_LOVE_CHOICE'
+  return prize
+}
+
+function rulesPayload() {
+  return {
+    pools: {
+      DAY: {
+        cost: 5,
+        prizes: dayPoolPrizes.map((prize) => bPrize(
+          prize.item_id,
+          prize.item_name,
+          prize.quantity,
+          prize.is_choice ? RING_CHOICES : undefined,
+        )),
+      },
+      NIGHT: {
+        cost: 8,
+        prizes: nightPoolPrizes.map((prize) => bPrize(
+          prize.item_id,
+          prize.item_name,
+          prize.quantity,
+          prize.is_choice ? RING_CHOICES : undefined,
+        )),
+      },
+    },
+    stages: Object.fromEntries(STAGE_CODES.map((stage, index) => [String(stage), stageRule(index)])),
+    chests: [bPrize(1205251, '月亮游记戒指'), bPrize(1205470, '爱意翩跹戒指'), choicePrize()],
+  }
+}
+
+function claimedMask() {
+  return apiState.rewards.reduce((mask, reward) => (
+    reward.claimed ? mask | (1 << reward.slot_index) : mask
+  ), 0)
+}
+
+function statePayload() {
+  return {
+    gold_balance: apiState.gold,
+    petal_balance: apiState.petals,
+    current_round_no: apiState.roundNumber,
+    formal_draw_count: apiState.tbpAvailable ? 0 : 1,
+    flower_count: apiState.currentLitCount,
+    // Tests use boxFlowState as an explicit "chance is exposed" switch; the
+    // production backend derives readiness from these counters.
+    unlocked_chests: apiState.boxFlowState === 'none' ? apiState.boxOpened : apiState.boxChances,
+    completed_chests: apiState.boxOpened,
+    claimed_stage_mask: claimedMask(),
+    status: apiState.currentLitCount >= 18 ? 'FULL' : 'ACTIVE',
+    rule_json: rulesPayload(),
+  }
+}
+
+function joinPayload() {
+  return {
+    edition_id: String(apiState.activityPeriodId),
+    gold: apiState.gold,
+    petals: apiState.petals,
+    round_no: apiState.roundNumber,
+    flowers: apiState.currentLitCount,
+    unlocked_chests: apiState.boxChances,
+    completed_chests: apiState.boxOpened,
+    claimed_stage_mask: claimedMask(),
+    score: 0,
+    rules: rulesPayload(),
+  }
+}
+
+function purchasesPayload() {
+  const orders: Array<{ product_code: string; order_id: string }> = []
+  apiState.purchasedPetalShopTiers.forEach((tier, index) => {
+    orders.push({ product_code: String(tier), order_id: `tier-${index}` })
+  })
+  if (apiState.petalGiftPurchased) orders.push({ product_code: 'gift', order_id: 'gift-1' })
+  return orders
+}
+
+function drawChoiceReward(item: DrawPendingChoice) {
+  const choices = RING_CHOICES
+  return {
+    grant_id: String(item.reward_record_id),
+    source_type: apiState.drawPoolType === 2 ? 'NIGHT_DRAW' : 'DAY_DRAW',
+    source_id: '1',
+    source_entry_no: 1,
+    round_no: apiState.roundNumber,
+    draw_id: '10',
+    original_reward_code: 'TRUE_LOVE_CHOICE',
+    original_item_name: item.item_name,
+    quantity: item.quantity,
+    status: 'PENDING_CHOICE',
+    candidate_snapshot: [bPrize(item.item_id, item.item_name, item.quantity, choices)],
+    created_at: '2026-07-10T12:00:00Z',
+  }
+}
+
+function stageChoiceReward() {
+  const pending = apiState.stagePendingChoice
+  if (!pending) return null
+  return {
+    grant_id: String(pending.reward_record_id),
+    source_type: 'STAGE',
+    source_id: '1',
+    source_entry_no: 1,
+    round_no: apiState.roundNumber,
+    original_reward_code: 'TRUE_LOVE_CHOICE',
+    original_item_name: pending.item_name,
+    quantity: pending.quantity,
+    status: 'PENDING_CHOICE',
+    candidate_snapshot: [bPrize(pending.item_id, pending.item_name, pending.quantity, RING_CHOICES)],
+    created_at: '2026-07-10T12:00:00Z',
+  }
+}
+
+function rewardsPayload(status?: string | null) {
+  const rows: any[] = []
+  const stage = stageChoiceReward()
+  if (stage) rows.push(stage)
+  apiState.drawPendingChoices.forEach((choice) => rows.push(drawChoiceReward(choice)))
+  ringRecordItems.forEach((item) => {
+    rows.push({
+      grant_id: String(item.id),
+      source_type: item.source === 'treasure_box' ? 'CHEST' : 'DAY_DRAW',
+      source_id: '1',
+      source_entry_no: 1,
+      round_no: apiState.roundNumber,
+      original_reward_code: 'RING',
+      original_item_name: item.item_name,
+      quantity: 1,
+      status: 'OBTAINED',
+      final_item_id: '1205251',
+      final_item_name: item.item_name,
+      candidate_snapshot: null,
+      created_at: item.created_at,
+    })
+  })
+  return status ? rows.filter((row) => row.status === status) : rows
+}
+
+function chestRowsPayload() {
+  const rows: any[] = []
+  if (apiState.boxPendingReward) {
+    const pending = apiState.boxPendingReward
+    rows.push({
+      chest_id: String(pending.box_id),
+      round_no: apiState.roundNumber,
+      chest_no: pending.chance_index,
+      status: 'OPENED',
+      candidate_snapshot: bPrize(
+        pending.item_id,
+        pending.item_name,
+        1,
+        pending.is_choice ? RING_CHOICES : undefined,
+      ),
+      grant_id: String(pending.grant_id ?? 901),
+      reward_status: pending.is_choice ? 'PENDING_CHOICE' : 'OBTAINED',
+    })
+  }
+  apiState.boxOpenedRewards.forEach((reward, index) => {
+    rows.push({
+      chest_id: `confirmed-${index + 1}`,
+      round_no: apiState.roundNumber,
+      chest_no: reward.chance_index,
+      status: 'CONFIRMED',
+      candidate_snapshot: bPrize(reward.item_id, reward.item_name, 1),
+      grant_id: `opened-${index + 1}`,
+      reward_status: 'OBTAINED',
+    })
+  })
+  return rows
+}
+
+function tbpSteps() {
+  const steps: any[] = []
+  const lit = Math.max(0, Math.min(180, apiState.tbpEstimatedLitFlowers))
+  for (let index = 0; index < 180; index += 1) {
+    const prize = index === 80
+      ? bPrize(1205251, '月亮游记戒指', 1)
+      : bPrize(1002, '花瓣', 1)
+    const before = Math.min(index, lit)
+    const after = index < lit ? before + 1 : before
+    steps.push({ prize, flowers_before: before, flowers_after: after, probability_lit: index < lit ? 1 : 0, gold_value: 0 })
+  }
+  return steps
+}
+
+function previewPayload() {
+  return {
+    preview_id: '77',
+    status: 'PENDING',
+    result_json: tbpSteps(),
+    required_petals: 900,
+  }
+}
+
+function rankingPayload() {
+  return {
+    top: rankingItems.map((item) => ({
+      user_id: String(item.user_id),
+      nickname: item.nickname,
+      score: item.score,
+      score_reached_at_sec: Math.floor(Date.parse(item.achieved_at) / 1000),
+      rank: item.rank,
+    })),
+    me: {
+      user_id: '1',
+      nickname: '测试用户',
+      score: 1_280,
+      score_reached_at_sec: Math.floor(Date.parse('2026-07-10T13:00:00Z') / 1000),
+      rank: 23,
+    },
+    source: 'mysql',
+  }
+}
+
 export const server = setupServer(
+  // ---- New contract: identity ----
+  http.post('/api/identity/v1/auth/refresh', () => HttpResponse.json({
+    access_token: 'test-token', user_id: '1', nickname: '测试用户',
+  })),
+  http.post('/api/identity/v1/auth/login', () => HttpResponse.json({
+    access_token: 'test-token', user_id: '1', nickname: '测试用户',
+  })),
+  http.post('/api/identity/v1/auth/register', () => HttpResponse.json({
+    access_token: 'test-token', user_id: '1', nickname: '测试用户',
+  })),
+  http.post('/api/identity/v1/auth/logout', () => HttpResponse.json({ status: 'ok' })),
+  http.get('/api/identity/v1/me', () => HttpResponse.json({
+    user_id: '1', session_id: 's1', nickname: '测试用户',
+  })),
+
+  // ---- New contract: activity session ----
+  http.get('/api/activity/v1/records/config', () => {
+    const ended = apiState.activityStatus === 2
+    const notStarted = apiState.activityStatus === 0
+    return HttpResponse.json([{
+      edition_id: String(apiState.activityPeriodId),
+      name: 'flower_2026',
+      status: ended ? 'ENDED' : 'ACTIVE',
+      starts_at: notStarted ? '2099-01-01T00:00:00Z' : '2026-01-01T00:00:00Z',
+      ends_at: ended ? '2026-02-01T00:00:00Z' : '2099-12-31T23:59:59Z',
+      settlement_status: 'PENDING',
+    }])
+  }),
+  http.post('/api/activity/v1/join', () => HttpResponse.json(joinPayload())),
+  http.get('/api/activity/v1/records/state', () => HttpResponse.json([statePayload()])),
+  http.get('/api/activity/v1/records/purchases', () => HttpResponse.json(purchasesPayload())),
+  http.get('/api/activity/v1/records/rewards', ({ request }) => {
+    const status = new URL(request.url).searchParams.get('status')
+    return HttpResponse.json(rewardsPayload(status))
+  }),
+  http.get('/api/activity/v1/records/summary', () => HttpResponse.json(
+    myRewardItems.map((item) => ({
+      item_id: String(item.item_id),
+      final_item_name: item.item_name,
+      quantity: item.quantity,
+    })),
+  )),
+  http.get('/api/activity/v1/records/draws', () => HttpResponse.json(
+    drawHistoryItems.map((item) => ({
+      draw_id: String(item.draw_log_id),
+      pool_code: item.pool_type === 2 ? 'NIGHT' : 'DAY',
+      mode: item.draw_mode === 2 ? 'PREVIEW' : 'NORMAL',
+      requested_count: item.requested_count,
+      actual_count: item.actual_count,
+      consumed_petals: item.cost_petals,
+      refunded_petals: item.refund_petals,
+      flowers_added: item.lit_flowers,
+      reward_snapshot_json: item.rewards.map((reward) => ({
+        prize: bPrize(reward.item_id, reward.item_name, reward.quantity),
+        flowers_before: 0,
+        flowers_after: 0,
+        probability_lit: 0,
+        gold_value: 0,
+      })),
+      occurred_at: item.created_at,
+    })),
+  )),
+  http.get('/api/activity/v1/records/flowers', () => HttpResponse.json([])),
+  http.get('/api/activity/v1/records/chests', () => HttpResponse.json(chestRowsPayload())),
+  http.get('/api/activity/v1/records/preview', () => HttpResponse.json(
+    apiState.tbpActiveSession ? [previewPayload()] : [],
+  )),
+
+  // ---- New contract: ranking ----
+  http.get('/api/ranking/v1/board', () => {
+    apiState.rankingRequestCount += 1
+    return HttpResponse.json(rankingPayload())
+  }),
+
+  // ---- New contract: lottery ----
+  http.post('/api/activity/v1/draw', async ({ request }) => {
+    const body = await request.json() as { pool_code: string; count: number; operation_id?: string }
+    const poolType = body.pool_code === 'NIGHT' ? 2 : 1
+    apiState.drawRequestCount += 1
+    const actualCount = apiState.drawActualCount ?? body.count
+    const litFlowers = apiState.drawLitFlowers ?? (body.count === 1 ? 1 : 3)
+    const beforeCount = apiState.currentLitCount
+    const litCountAfter = apiState.drawLitCountAfter ?? beforeCount + litFlowers
+    apiState.drawPoolType = poolType
+    apiState.drawCount = body.count
+    apiState.tbpAvailable = false
+    apiState.currentLitCount = litCountAfter
+    if (litCountAfter >= 18) {
+      apiState.boxChances = Math.max(apiState.boxChances, 3)
+      if (apiState.boxChances > apiState.boxOpened) apiState.boxFlowState = 'ready'
+    }
+    if (apiState.boxChances > apiState.boxOpened) apiState.boxFlowState = 'ready'
+    const rewards = createDrawRewards(actualCount, poolType)
+    if (apiState.drawChoiceOnNextDraw) {
+      const pendingChoice: DrawPendingChoice = {
+        reward_record_id: '901',
+        item_id: 1207751,
+        item_name: '真爱无敌戒指选择权',
+        quantity: 1,
+        choice_ids: [1207751, 1207752, 1207753],
+      }
+      rewards[rewards.length - 1] = {
+        reward_record_id: '901',
+        item_id: 1207751,
+        item_name: pendingChoice.item_name,
+        quantity: 1,
+        is_choice: true,
+        choice_ids: pendingChoice.choice_ids,
+        pool_type: poolType,
+      }
+      apiState.drawPendingChoices = [pendingChoice]
+    }
+    const steps: any[] = []
+    let flowers = beforeCount
+    const increments = Math.max(0, litCountAfter - beforeCount)
+    rewards.forEach((reward, index) => {
+      const before = flowers
+      if (index < increments && flowers < 18) flowers += 1
+      steps.push({
+        prize: bPrize(
+          reward.item_id,
+          reward.item_name,
+          reward.quantity,
+          reward.is_choice ? RING_CHOICES : undefined,
+        ),
+        flowers_before: before,
+        flowers_after: flowers,
+        probability_lit: index < increments ? 1 : 0,
+        gold_value: 0,
+        grant_id: reward.reward_record_id ? String(reward.reward_record_id) : String(1000 + index),
+      })
+    })
+    return HttpResponse.json({
+      draw_id: '10',
+      results: steps,
+      consumed_petals: actualCount * (poolType === 2 ? 8 : 5),
+      refunded_petals: apiState.drawRefundPetals,
+      requested_count: body.count,
+      actual_count: actualCount,
+      flowers: litCountAfter,
+    })
+  }),
+
+  // ---- New contract: reward selection ----
+  http.post('/api/activity/v1/select', async ({ request }) => {
+    const body = await request.json() as { id: string; item_id: string }
+    const itemId = Number(body.item_id)
+    const names: Record<number, string> = {
+      1207751: '真爱无敌戒指经典款',
+      1207752: '真爱无敌戒指铭文款',
+      1207753: '爱你万年戒指铭文款',
+    }
+    const stage = apiState.stagePendingChoice
+    if (stage && String(stage.reward_record_id) === body.id) {
+      apiState.stageConfirmedItemId = itemId
+      apiState.stagePendingChoice = null
+      return HttpResponse.json({
+        grant_id: body.id, item_id: body.item_id, item_name: names[itemId] ?? stage.item_name, quantity: 1,
+      })
+    }
+    const draw = apiState.drawPendingChoices.find((item) => String(item.reward_record_id) === body.id)
+    if (draw && draw.choice_ids.includes(itemId)) {
+      apiState.drawConfirmedItemIds.push(itemId)
+      apiState.drawPendingChoices = apiState.drawPendingChoices.filter((item) => item.reward_record_id !== body.id)
+      return HttpResponse.json({
+        grant_id: body.id, item_id: body.item_id, item_name: names[itemId] ?? draw.item_name, quantity: draw.quantity,
+      })
+    }
+    const box = apiState.boxPendingReward
+    if (box && String(box.grant_id ?? 901) === body.id) {
+      apiState.boxConfirmedItemId = itemId
+      return HttpResponse.json({
+        grant_id: body.id, item_id: body.item_id, item_name: names[itemId] ?? box.item_name, quantity: 1,
+      })
+    }
+    return HttpResponse.json({ error: 'NOT_FOUND' }, { status: 404 })
+  }),
+
+  // ---- New contract: stage ----
+  http.post('/api/activity/v1/stage', async ({ request }) => {
+    const body = await request.json() as { stage: number }
+    const index = STAGE_CODES.indexOf(body.stage)
+    if (index < 0) return HttpResponse.json({ error: 'INVALID_STAGE' }, { status: 400 })
+    const claimed = apiState.rewards[index]
+    apiState.claimedSlot = index
+    apiState.rewards = apiState.rewards.map((reward, i) => i === index
+      ? { ...reward, claimed: true, reachable: false }
+      : reward)
+    if (claimed?.is_choice) {
+      apiState.stagePendingChoice = {
+        reward_record_id: `50${index + 1}`,
+        slot_index: index,
+        item_id: claimed.item_id,
+        item_name: claimed.item_name,
+        quantity: claimed.quantity,
+        choice_ids: [1207751, 1207752, 1207753],
+      }
+    }
+    return HttpResponse.json({ grant_id: `50${index + 1}` })
+  }),
+
+  // ---- New contract: treasure box ----
+  http.post('/api/activity/v1/chest-open', () => {
+    apiState.boxOpenCount += 1
+    apiState.boxPendingReward = apiState.boxNextRewardIsChoice
+      ? {
+          box_id: '9',
+          grant_id: '901',
+          chance_index: apiState.boxOpened + 1,
+          item_id: 1207751,
+          item_name: '真爱无敌戒指选择权',
+          is_choice: true,
+          choice_ids: [1207751, 1207752, 1207753],
+        }
+      : {
+          box_id: '9',
+          grant_id: '902',
+          chance_index: apiState.boxOpened + 1,
+          item_id: 1205251,
+          item_name: '月亮游记戒指',
+          is_choice: false,
+          choice_ids: [],
+        }
+    apiState.boxFlowState = apiState.boxPendingReward.is_choice ? 'choice' : 'result'
+    return HttpResponse.json({
+      chest_id: apiState.boxPendingReward.box_id,
+      grant_id: apiState.boxPendingReward.grant_id,
+      reward: bPrize(
+        apiState.boxPendingReward.item_id,
+        apiState.boxPendingReward.item_name,
+        1,
+        apiState.boxPendingReward.is_choice ? RING_CHOICES : undefined,
+      ),
+    })
+  }),
+  http.post('/api/activity/v1/chest-confirm', async ({ request }) => {
+    const body = await request.json() as { id: string }
+    const pending = apiState.boxPendingReward
+    if (!pending || String(pending.box_id) !== body.id) {
+      return HttpResponse.json({ error: 'CHEST_NOT_FOUND' }, { status: 404 })
+    }
+    const selectedItemId = apiState.boxConfirmedItemId ?? pending.item_id
+    apiState.boxConfirmCount += 1
+    apiState.boxOpened = Math.max(apiState.boxOpened, pending.chance_index)
+    apiState.boxOpenedRewards.push({
+      chance_index: pending.chance_index,
+      item_id: selectedItemId,
+      item_name: selectedItemId === 1205470 ? '爱意翩跹戒指' : pending.item_name,
+      is_choice: Boolean(pending.is_choice),
+    })
+    apiState.boxPendingReward = null
+    apiState.boxFlowState = apiState.boxOpened < apiState.boxChances ? 'ready' : 'none'
+    return HttpResponse.json({ status: 'CONFIRMED' })
+  }),
+
+  // ---- New contract: try-before-pay ----
+  http.post('/api/activity/v1/preview', () => {
+    apiState.tbpPreviewCount += 1
+    apiState.tbpActiveSession = true
+    return HttpResponse.json(previewPayload())
+  }),
+  http.post('/api/activity/v1/preview-confirm', () => {
+    const shortage = Math.max(0, 900 - apiState.petals)
+    const goldCost = shortage * 60
+    if (apiState.gold < goldCost) {
+      return HttpResponse.json({ error: 'INSUFFICIENT_GOLD' }, { status: 409 })
+    }
+    apiState.gold -= goldCost
+    apiState.petals -= Math.min(900, apiState.petals)
+    apiState.tbpConfirmed = true
+    apiState.tbpActiveSession = false
+    apiState.tbpAvailable = false
+    if (apiState.tbpChoiceOnConfirm) {
+      apiState.drawPendingChoices = [{
+        reward_record_id: '903',
+        item_id: 1207751,
+        item_name: '真爱无敌戒指选择权',
+        quantity: 1,
+        choice_ids: [1207751, 1207752, 1207753],
+      }]
+    }
+    if (apiState.boxChances > apiState.boxOpened) apiState.boxFlowState = 'ready'
+    return HttpResponse.json({
+      draw_id: '30',
+      results: [],
+      consumed_petals: 900,
+      refunded_petals: 0,
+      requested_count: 180,
+      actual_count: 180,
+      flowers: apiState.currentLitCount + apiState.tbpEstimatedLitFlowers,
+    })
+  }),
+  http.post('/api/activity/v1/preview-abandon', () => {
+    apiState.tbpAbandoned = true
+    apiState.tbpActiveSession = false
+    apiState.tbpAvailable = false
+    return HttpResponse.json({ status: 'ABANDONED' })
+  }),
+
+  // ---- New contract: next round ----
+  http.post('/api/activity/v1/next-round', () => {
+    apiState.newRoundRequestCount += 1
+    if (apiState.currentLitCount < 18) {
+      return HttpResponse.json({ error: 'ROUND_NOT_COMPLETE' }, { status: 409 })
+    }
+    if (apiState.boxOpened < apiState.boxChances) {
+      return HttpResponse.json({ error: 'ROUND_NOT_COMPLETE' }, { status: 409 })
+    }
+    const hasUnclaimedReward = apiState.rewards.some((reward) => (
+      reward.lit_threshold <= apiState.currentLitCount && !reward.claimed
+    ))
+    if (hasUnclaimedReward) {
+      return HttpResponse.json({ error: 'ROUND_NOT_COMPLETE' }, { status: 409 })
+    }
+    apiState.roundNumber += 1
+    apiState.currentLitCount = 0
+    apiState.rewards = createStageRewards().map((reward) => ({ ...reward, claimed: false, reachable: false }))
+    apiState.boxChances = 0
+    apiState.boxOpened = 0
+    apiState.boxFlowState = 'none'
+    apiState.boxPendingReward = null
+    apiState.boxOpenedRewards = []
+    apiState.newRoundStarted = true
+    return HttpResponse.json({ round_no: apiState.roundNumber })
+  }),
+
+  // ---- New contract: purchase ----
+  http.post('/api/activity/v1/purchase', async ({ request }) => {
+    const body = await request.json() as { product_code: string; petals?: number }
+    if (body.product_code === 'gift') {
+      if (apiState.petalGiftPurchased) {
+        return HttpResponse.json({ error: 'ALREADY_PURCHASED' }, { status: 409 })
+      }
+      apiState.petalGiftPurchased = true
+      apiState.petalGiftPurchaseCount += 1
+      apiState.petals += 100
+      return HttpResponse.json({ order_id: 'gift-1', gold: apiState.gold, petals: apiState.petals })
+    }
+    const tier = Number(body.product_code)
+    const amount = body.product_code === 'top-up' ? Number(body.petals ?? 0) : tier
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return HttpResponse.json({ error: 'INVALID_REQUEST' }, { status: 400 })
+    }
+    const isOneTimeTier = TIER_AMOUNTS_FOR_TEST.includes(amount)
+    if (isOneTimeTier && apiState.purchasedPetalShopTiers.includes(amount)) {
+      return HttpResponse.json({ error: 'ALREADY_PURCHASED' }, { status: 409 })
+    }
+    const costGold = body.product_code === 'top-up' ? amount * 60 : getPetalCostGold(amount)
+    if (apiState.gold < costGold) {
+      return HttpResponse.json({ error: 'INSUFFICIENT_OR_OVERFLOWING_ASSET' }, { status: 409 })
+    }
+    apiState.gold -= costGold
+    apiState.petals += amount
+    if (isOneTimeTier) apiState.purchasedPetalShopTiers.push(amount)
+    return HttpResponse.json({
+      order_id: `order-${Date.now()}`,
+      gold: apiState.gold,
+      petals: apiState.petals,
+    })
+  }),
+
+  // ---- New contract: SSE ----
+  http.get('/api/notification/v1/barrage/stream', () => {
+    apiState.marqueeRequestCount += 1
+    const ready = 'event: ready\ndata: {"status":"connected"}\n\n'
+    const events = apiState.marqueeItems.map((item) => {
+      const id = String(item.id)
+      return `event: barrage\nid: ${id}\ndata: ${JSON.stringify({
+        message_id: id,
+        display_name: item.nickname,
+        item_name: item.item_name,
+        quantity: 1,
+        expires_at: '2099-01-01T00:00:00Z',
+      })}\n\n`
+    }).join('')
+    return new HttpResponse(ready + events, {
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+  }),
+
+  // ---- Legacy handlers below are no longer reached by the migrated adapters.
   http.get('/api/v1/auth/profile', () => success({ user_id: 1, username: 'tester', nickname: '测试用户' })),
   http.post('/api/v1/auth/logout', () => success(null)),
   http.get('/api/v1/activity/config', () => success({

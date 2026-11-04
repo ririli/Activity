@@ -1,6 +1,8 @@
 # ranking-service 设计方案
 
-日期：2026-11-04。状态：待实施设计；本轮不编写业务代码、不修改或执行 DDL。
+日期：2026-11-04。状态：主体已实现；2026-11-05 追加资料 gRPC 客户端与可恢复结算。
+
+> 实施说明（2026-11-05）：昵称查询已改为 identity gRPC `BatchGetPublicProfiles`，ranking 侧有 200ms 截止、60s fresh/10m stale 缓存；`/internal/identity/v1/profiles` HTTP 接口已删除。结算已实现 cursor/lease 状态机 `PENDING→RECONCILING→FROZEN→AWARDING→COMPLETED`，冻结后拒绝新积分事实，排名奖励与 outbox 批量写入；具体验证记录见 [后端实现与验收](后端实现与验收.md)。榜单 Redis generation/rebuild 仍按 [榜单Redis增量实现](榜单Redis增量实现.md) 的收窄范围，未在本轮扩展。
 
 依据：[业务需求 V1.2](Lottery业务需求文档（不含后台）.md)、[持久层设计 V2](持久层设计方案V2.md)、[现有榜单 DDL](../services/ranking-service/migrations/001_initial.sql)。
 

@@ -37,7 +37,7 @@ func channel() (*amqp.Connection, *amqp.Channel, error) {
 
 // The outbox row lock is held until the broker confirms. A crash before marking
 // PUBLISHED causes replay; consumers must commit their inbox before ACK.
-func Dispatch(ctx context.Context, db *sql.DB) {
+func Dispatch(ctx context.Context, db *sql.DB, beforePublish ...func(context.Context, Event)) {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
 	for {
@@ -45,13 +45,13 @@ func Dispatch(ctx context.Context, db *sql.DB) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if e := dispatchOne(ctx, db); e != nil {
+			if e := dispatchOne(ctx, db, beforePublish...); e != nil {
 				slog.Error("outbox retry", "error", e)
 			}
 		}
 	}
 }
-func dispatchOne(ctx context.Context, db *sql.DB) error {
+func dispatchOne(ctx context.Context, db *sql.DB, beforePublish ...func(context.Context, Event)) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	tx, e := db.BeginTx(ctx, nil)
@@ -66,6 +66,9 @@ func dispatchOne(ctx context.Context, db *sql.DB) error {
 	}
 	if e != nil {
 		return e
+	}
+	for _, hook := range beforePublish {
+		hook(ctx, ev)
 	}
 	conn, ch, e := channel()
 	if e != nil {

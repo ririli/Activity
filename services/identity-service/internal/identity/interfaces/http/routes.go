@@ -51,9 +51,9 @@ func Routes(g *gin.Engine, s *application.Service) {
 	auth.POST("/logout", csrf, func(c *gin.Context) {
 		raw, _ := c.Cookie(cookie)
 		e := s.Logout(c.Request.Context(), raw)
-		if e == nil {
-			c.SetCookie(cookie, "", -1, path, "", os.Getenv("COOKIE_SECURE") != "false", true)
-		}
+		// Clear the cookie on success, idempotent no-cookie logout, and invalid
+		// signed cookies. An invalid cookie still returns 401.
+		c.SetCookie(cookie, "", -1, path, "", os.Getenv("COOKIE_SECURE") != "false", true)
 		platform.Respond(c, gin.H{"status": "ok"}, e)
 	})
 	g.GET("/api/identity/v1/me", func(c *gin.Context) {
@@ -69,16 +69,6 @@ func Routes(g *gin.Engine, s *application.Service) {
 			return
 		}
 		p, e := s.Introspect(c.Request.Context(), v.Token)
-		platform.Respond(c, p, e)
-	})
-	internal.POST("/profiles", func(c *gin.Context) {
-		var v struct {
-			IDs []string `json:"ids" binding:"required,max=100"`
-		}
-		if !platform.Bind(c, &v) {
-			return
-		}
-		p, e := s.Repo.Profiles(c.Request.Context(), v.IDs)
 		platform.Respond(c, p, e)
 	})
 }

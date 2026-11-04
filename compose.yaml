@@ -15,6 +15,7 @@ services:
       - ./services/activity-service/migrations/001_initial.sql:/docker-entrypoint-initdb.d/020_activity.sql:ro
       - ./services/activity-service/migrations/002_records.sql:/docker-entrypoint-initdb.d/021_activity_records.sql:ro
       - ./services/ranking-service/migrations/001_initial.sql:/docker-entrypoint-initdb.d/030_ranking.sql:ro
+      - ./services/ranking-service/migrations/002_settlement_resume.sql:/docker-entrypoint-initdb.d/031_ranking_settlement.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
       interval: 5s

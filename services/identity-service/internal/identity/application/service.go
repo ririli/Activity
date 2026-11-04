@@ -8,16 +8,34 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"strconv"
 	"time"
 )
 
+// Rotation reports the session state observed by a refresh rotation. When the
+// Refresh token is a replay, Replayed is true and ExpiresAt carries the session
+// expiry needed to write the revocation key after the MySQL commit.
+type Rotation struct {
+	ExpiresAt time.Time
+	Replayed  bool
+}
+
+// RevocationStore is the Redis revocation blacklist plus the local negative
+// cache. Revoked may return an error when Redis is unavailable; callers must
+// never interpret that error as "not revoked" and must still check MySQL.
+type RevocationStore interface {
+	Revoked(ctx context.Context, sid string, tokenExpiry time.Time) (bool, error)
+	MarkRevoked(ctx context.Context, sid string, sessionExpiresAt time.Time) error
+	Forget(sid string)
+}
+
 type Repository interface {
 	domain.Repository
 	CreateSession(context.Context, domain.Session) error
-	Rotate(context.Context, string, [32]byte, [32]byte) error
-	Revoke(context.Context, string) error
-	Profiles(context.Context, []string) (map[string]string, error)
+	Rotate(context.Context, string, [32]byte, [32]byte) (Rotation, error)
+	Revoke(context.Context, string) (time.Time, error)
+	PublicProfiles(context.Context, []string) (map[string]string, error)
 }
 type Limiter interface {
 	Take(context.Context, string, int, time.Duration) error
@@ -28,6 +46,7 @@ type Service struct {
 	Repo            Repository
 	Access, Refresh security.TokenSigner
 	Limiter         Limiter
+	Revocations     RevocationStore
 	HashSlots       chan struct{}
 	DummyHash       string
 }
@@ -152,10 +171,35 @@ func (s *Service) Login(ctx context.Context, c Credentials) (Tokens, error) {
 	e = s.Repo.CreateSession(ctx, domain.Session{ID: sid, UserID: a.UserID, RefreshHash: sha256.Sum256([]byte(t.Refresh)), ExpiresAt: expires})
 	return t, e
 }
+func (s *Service) markRevoked(sid string, expires time.Time) {
+	if s.Revocations == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if e := s.Revocations.MarkRevoked(ctx, sid, expires); e != nil {
+		slog.Warn("failed to write revocation blacklist", "error", e)
+	}
+	s.Revocations.Forget(sid)
+}
 func (s *Service) Introspect(ctx context.Context, raw string) (platform.Principal, error) {
 	c, e := s.Access.Verify(raw)
 	if e != nil {
 		return platform.Principal{}, platform.Fail(401, "INVALID_TOKEN")
+	}
+	var tokenExpiry time.Time
+	if c.ExpiresAt != nil {
+		tokenExpiry = c.ExpiresAt.Time
+	}
+	if s.Revocations != nil {
+		revoked, revErr := s.Revocations.Revoked(ctx, c.SessionID, tokenExpiry)
+		if revErr != nil {
+			// Strict mode still validates MySQL. Redis errors must never be
+			// treated as proof that the session is valid.
+			slog.Warn("revocation cache unavailable; falling back to mysql", "error", revErr)
+		} else if revoked {
+			return platform.Principal{}, platform.Fail(401, "INVALID_SESSION")
+		}
 	}
 	session, a, e := s.Repo.SessionAccount(ctx, c.SessionID)
 	if errors.Is(e, sql.ErrNoRows) {
@@ -164,10 +208,47 @@ func (s *Service) Introspect(ctx context.Context, raw string) (platform.Principa
 	if e != nil {
 		return platform.Principal{}, e
 	}
-	if session.RevokedAt != nil || !session.ExpiresAt.After(time.Now()) || a.Status != "ACTIVE" || strconv.FormatUint(a.UserID, 10) != c.Subject {
+	if session.RevokedAt != nil {
+		if session.ExpiresAt.After(time.Now()) {
+			s.markRevoked(c.SessionID, session.ExpiresAt)
+		}
+		return platform.Principal{}, platform.Fail(401, "INVALID_SESSION")
+	}
+	if !session.ExpiresAt.After(time.Now()) || a.Status != "ACTIVE" || strconv.FormatUint(a.UserID, 10) != c.Subject {
 		return platform.Principal{}, platform.Fail(401, "INVALID_SESSION")
 	}
 	return platform.Principal{UserID: c.Subject, SessionID: c.SessionID, Nickname: a.Nickname}, nil
+}
+func (s *Service) PublicProfiles(ctx context.Context, ids []string) ([]domain.PublicProfile, error) {
+	if len(ids) == 0 {
+		return []domain.PublicProfile{}, nil
+	}
+	seen := make(map[string]struct{}, len(ids))
+	unique := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, e := platform.UID(id); e != nil {
+			return nil, platform.Fail(400, "INVALID_REQUEST")
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+		if len(unique) > 100 {
+			return nil, platform.Fail(400, "INVALID_REQUEST")
+		}
+	}
+	names, e := s.Repo.PublicProfiles(ctx, unique)
+	if e != nil {
+		return nil, e
+	}
+	out := make([]domain.PublicProfile, 0, len(unique))
+	for _, id := range unique {
+		if name, ok := names[id]; ok {
+			out = append(out, domain.PublicProfile{UserID: id, DisplayName: name})
+		}
+	}
+	return out, nil
 }
 func (s *Service) Renew(ctx context.Context, raw string) (Tokens, error) {
 	c, e := s.Refresh.Verify(raw)
@@ -188,13 +269,30 @@ func (s *Service) Renew(ctx context.Context, raw string) (Tokens, error) {
 	if e != nil {
 		return Tokens{}, e
 	}
-	e = s.Repo.Rotate(ctx, session.ID, sha256.Sum256([]byte(raw)), sha256.Sum256([]byte(t.Refresh)))
-	return t, e
+	rotation, e := s.Repo.Rotate(ctx, session.ID, sha256.Sum256([]byte(raw)), sha256.Sum256([]byte(t.Refresh)))
+	if e != nil {
+		if rotation.Replayed {
+			s.markRevoked(c.SessionID, rotation.ExpiresAt)
+		}
+		return Tokens{}, e
+	}
+	return t, nil
 }
 func (s *Service) Logout(ctx context.Context, raw string) error {
+	if raw == "" {
+		return nil
+	}
 	c, e := s.Refresh.Verify(raw)
 	if e != nil {
 		return platform.Fail(401, "INVALID_REFRESH")
 	}
-	return s.Repo.Revoke(ctx, c.SessionID)
+	expires, e := s.Repo.Revoke(ctx, c.SessionID)
+	if e != nil {
+		return e
+	}
+	if expires.IsZero() && c.ExpiresAt != nil {
+		expires = c.ExpiresAt.Time
+	}
+	s.markRevoked(c.SessionID, expires)
+	return nil
 }

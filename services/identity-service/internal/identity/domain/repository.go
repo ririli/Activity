@@ -13,6 +13,12 @@ type Account struct {
 	Status       string
 }
 
+// PublicProfile is the only account projection exposed to other services.
+type PublicProfile struct {
+	UserID      string
+	DisplayName string
+}
+
 type Session struct {
 	ID          string
 	UserID      uint64
