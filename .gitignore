@@ -1,0 +1,20 @@
+# Local IDE settings
+.idea/
+.vscode/
+
+# Local secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Build and test output
+node_modules/
+dist/
+*.tsbuildinfo
+*.test
+coverage.out
+
+# OS files
+.DS_Store
+Thumbs.db
