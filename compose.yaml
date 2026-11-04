@@ -1,0 +1,56 @@
+name: activity-local
+
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-activity-local-root}
+      TZ: UTC
+    ports:
+      - "127.0.0.1:13306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./deploy/local/mysql/000_databases.sql:/docker-entrypoint-initdb.d/000_databases.sql:ro
+      - ./services/identity-service/migrations/001_initial.sql:/docker-entrypoint-initdb.d/010_identity.sql:ro
+      - ./services/activity-service/migrations/001_initial.sql:/docker-entrypoint-initdb.d/020_activity.sql:ro
+      - ./services/activity-service/migrations/002_records.sql:/docker-entrypoint-initdb.d/021_activity_records.sql:ro
+      - ./services/ranking-service/migrations/001_initial.sql:/docker-entrypoint-initdb.d/030_ranking.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 40s
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:16379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  rabbitmq:
+    image: rabbitmq:4.1-management
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-activity}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-activity-local}
+    ports:
+      - "127.0.0.1:15672:15672"
+      - "127.0.0.1:15673:5672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  mysql_data:
+  redis_data:
+  rabbitmq_data:

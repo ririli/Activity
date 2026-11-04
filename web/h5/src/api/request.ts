@@ -53,15 +53,11 @@ request.interceptors.request.use(
 
 // —— 并发刷新竞态控制 ——
 let isRefreshing = false
-let refreshSubscribers: ((token: string) => void)[] = []
+let refreshSubscribers: { resolve: (token: string) => void; reject: (error: unknown) => void }[] = []
 
 function onRefreshed(token: string) {
-  refreshSubscribers.forEach((cb) => cb(token))
+  refreshSubscribers.forEach(({ resolve }) => resolve(token))
   refreshSubscribers = []
-}
-
-function addRefreshSubscriber(cb: (token: string) => void) {
-  refreshSubscribers.push(cb)
 }
 
 // 执行 token 刷新（不经过拦截器，避免死循环）
@@ -137,11 +133,11 @@ request.interceptors.response.use(
     ) {
       // 如果已有刷新正在进行中，排队等待
       if (isRefreshing) {
-        return new Promise((resolve) => {
-          addRefreshSubscriber((newToken: string) => {
+        return new Promise((resolve, reject) => {
+          refreshSubscribers.push({ resolve: (newToken: string) => {
             originalRequest.headers.Authorization = `Bearer ${newToken}`
             resolve(request(originalRequest))
-          })
+          }, reject })
         })
       }
 
@@ -158,6 +154,7 @@ request.interceptors.response.use(
         return request(originalRequest)
       } catch (refreshError) {
         isRefreshing = false
+        refreshSubscribers.forEach(({ reject }) => reject(refreshError))
         refreshSubscribers = []
         forceLogout('会话已过期，请重新登录')
         return Promise.reject(refreshError)

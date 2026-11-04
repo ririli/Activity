@@ -1,0 +1,7 @@
+services:
+  mysql:
+    ports: !override ["127.0.0.1:23306:3306"]
+  redis:
+    ports: !override ["127.0.0.1:26379:6379"]
+  rabbitmq:
+    ports: !override ["127.0.0.1:25673:5672"]

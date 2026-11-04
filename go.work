@@ -1,0 +1,9 @@
+go 1.25.1
+
+use (
+ .
+ ./services/identity-service
+ ./services/activity-service
+ ./services/ranking-service
+ ./services/notification-service
+)

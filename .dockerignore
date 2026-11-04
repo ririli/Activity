@@ -1,0 +1,5 @@
+.git
+.local
+web
+**/node_modules
+**/*.exe
