@@ -1,4 +1,5 @@
 import { fetchEventSource } from '@microsoft/fetch-event-source'
+import { retryAfterMs } from './request'
 
 export interface AuthSSECallbacks {
   onOpen?: () => void
@@ -26,6 +27,8 @@ export function createAuthSSE(
   let reconnectCount = 0
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
+  let serverDelay = 0
+
   function retry(error: unknown) {
     if (intentional || stopped) return
     reconnectCount += 1
@@ -35,7 +38,8 @@ export function createAuthSSE(
       return
     }
     if (reconnectTimer !== null) return
-    const delay = Math.min(1000 * Math.pow(2, reconnectCount - 1), 30000)
+    const delay = Math.max(serverDelay, Math.min(1000 * Math.pow(2, reconnectCount - 1), 30000)) + Math.floor(Math.random() * 1000)
+    serverDelay = 0
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null
       connect()
@@ -70,6 +74,7 @@ export function createAuthSSE(
           current.abort()
           return
         }
+        serverDelay = retryAfterMs(response.headers.get('Retry-After'))
         throw new Error(`SSE 连接失败: HTTP ${response.status}`)
       },
 

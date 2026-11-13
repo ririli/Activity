@@ -2,6 +2,7 @@ package main
 
 import (
 	"activity/pkg/platform"
+	"activity/pkg/ratelimit"
 	"activity/services/identity-service/internal/identity/application"
 	revcache "activity/services/identity-service/internal/identity/infrastructure/cache"
 	store "activity/services/identity-service/internal/identity/infrastructure/mysql"
@@ -74,7 +75,9 @@ func main() {
 		platform.Must(err)
 		revocations = c
 	}
-	s := &application.Service{Repo: store.Repository{DB: db}, Access: signer("access", "activity-api"), Refresh: signer("refresh", "identity-refresh"), Limiter: limit.Limiter{R: r}, Revocations: revocations, HashSlots: make(chan struct{}, 4), DummyHash: dummy}
+	limiter := ratelimit.NewRedis()
+	defer limiter.Close()
+	s := &application.Service{Repo: store.Repository{DB: db}, Access: signer("access", "activity-api"), Refresh: signer("refresh", "identity-refresh"), Limiter: limit.NewLimiter(limiter.Client, platform.Env("REGISTER_IP_WHITELIST", "")), Revocations: revocations, HashSlots: make(chan struct{}, 4), DummyHash: dummy}
 
 	lis, e := net.Listen("tcp", platform.Env("GRPC_ADDR", ":9090"))
 	platform.Must(e)
@@ -102,7 +105,7 @@ func main() {
 		}
 		return nil
 	})
-	httpapi.Routes(g, s)
+	httpapi.Routes(g, s, limiter)
 	platform.Run(g, func(ctx context.Context) { platform.Dispatch(ctx, db) })
 
 	grpcReady.Store(false)

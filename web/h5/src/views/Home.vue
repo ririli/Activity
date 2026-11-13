@@ -1213,8 +1213,13 @@ function connectMarqueeSSE() {
         marqueeEventSource.value?.close()
         marqueeEventSource.value = null
         void (async () => {
-          if (await authStore.refreshSession()) connectMarqueeSSE()
-          else router.replace('/login')
+          try {
+            if (await authStore.refreshSession()) connectMarqueeSSE()
+            else router.replace('/login')
+          } catch (error) {
+            marqueeSSEDegraded.value = true
+            showToast(error instanceof Error ? error.message : '服务暂时不可用，请稍后重试')
+          }
         })()
       },
       onUnavailable: () => {
@@ -1828,9 +1833,14 @@ onMounted(async () => {
   })
 
   if (!authStore.user) {
-    const authenticated = await authStore.initFromStorage()
-    if (!authenticated) {
-      router.replace('/login')
+    try {
+      const authenticated = await authStore.initFromStorage()
+      if (!authenticated) {
+        router.replace('/login')
+        return
+      }
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '服务暂时不可用，请稍后重试')
       return
     }
   }

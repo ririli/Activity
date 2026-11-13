@@ -2,6 +2,7 @@ package main
 
 import (
 	"activity/pkg/platform"
+	"activity/pkg/ratelimit"
 	"activity/services/ranking-service/internal/ranking/application"
 	identitygrpc "activity/services/ranking-service/internal/ranking/infrastructure/identitygrpc"
 	store "activity/services/ranking-service/internal/ranking/infrastructure/mysql"
@@ -41,7 +42,7 @@ func main() {
 		e := platform.Call(ctx, platform.Env("ACTIVITY_URL", "http://localhost:8082"), "/internal/activity/v1/encoding", map[string]string{"edition_id": edition}, &b)
 		return b, e
 	}}
-	repo := &store.Repository{DB: db, Redis: r, Cache: projection}
+	repo := &store.Repository{DB: db, Cache: projection}
 	profiles, err := identitygrpc.New(
 		platform.Env("IDENTITY_GRPC_ADDR", "localhost:9090"),
 		os.Getenv("INTERNAL_TOKEN"),
@@ -52,10 +53,14 @@ func main() {
 	)
 	platform.Must(err)
 	defer profiles.Close()
-	g := platform.Router(db, r)
-	httpapi.Routes(g, application.Service{Repo: repo, Profiles: profiles})
+	limiter := ratelimit.NewRedis()
+	defer limiter.Close()
+	// Ranking reads and settlement can use MySQL while Redis is unavailable.
+	g := platform.Router(db, nil)
+	httpapi.Routes(g, application.Service{Repo: repo, Profiles: profiles}, limiter)
 	platform.Run(g, func(ctx context.Context) {
 		go platform.Dispatch(ctx, db)
+		go repo.MaintainCache(ctx)
 		platform.Consume(ctx, "ranking.facts.v1", []string{"ParticipationInitialized.v1", "FormalDrawCommitted.v1", "RankingAwardGranted.v1"}, repo.Consume)
 	})
 }

@@ -63,6 +63,18 @@ func (e *Fault) Error() string           { return e.Code }
 func Fail(status int, code string) error { return &Fault{status, code} }
 func Respond(c *gin.Context, v any, err error) {
 	if err != nil {
+		var admission interface {
+			HTTPStatus() int
+			ErrorCode() string
+			RetryAfter() time.Duration
+		}
+		if errors.As(err, &admission) {
+			if d := admission.RetryAfter(); d > 0 {
+				c.Header("Retry-After", strconv.FormatInt(int64((d+time.Second-1)/time.Second), 10))
+			}
+			c.JSON(admission.HTTPStatus(), gin.H{"error": admission.ErrorCode()})
+			return
+		}
 		var dbErr *mysql.MySQLError
 		if errors.As(err, &dbErr) && (dbErr.Number == 3572 || dbErr.Number == 1213 || dbErr.Number == 1205 || dbErr.Number == 1062) {
 			c.JSON(409, gin.H{"error": "STATE_CONFLICT"})

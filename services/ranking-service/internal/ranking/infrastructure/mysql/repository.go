@@ -9,67 +9,107 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/redis/go-redis/v9"
 	"math"
 	"strconv"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 type Repository struct {
-	DB    *sql.DB
-	Redis *redis.Client
-	Cache *cache.Cache
+	DB            *sql.DB
+	Cache         *cache.Cache
+	editions      sync.Map
+	fallbackReads atomic.Int32
 }
 
 func number(s string) (int64, error) {
 	n, e := strconv.ParseInt(s, 10, 64)
-	if e != nil || n < 0 {
+	if e != nil || n < 0 || strconv.FormatInt(n, 10) != s {
 		return 0, platform.Fail(409, "INVALID_EVENT_NUMBER")
 	}
 	return n, nil
 }
-func (r *Repository) Consume(ctx context.Context, ev platform.Event) error {
-	if ev.Type == "RankingAwardGranted.v1" {
-		return r.receipt(ctx, ev)
+func settlementPhase(ctx context.Context, tx *sql.Tx, edition string) (string, error) {
+	var phase string
+	err := tx.QueryRowContext(ctx, `SELECT status FROM ranking_settlement WHERE edition_id=?`, edition).Scan(&phase)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
 	}
-	var f domain.Fact
-	if e := json.Unmarshal(ev.Payload, &f); e != nil {
-		return platform.Fail(409, "INVALID_EVENT")
-	}
-	if _, e := platform.UID(f.User); e != nil {
-		return platform.Fail(409, "INVALID_EVENT_USER")
-	}
-	if _, e := platform.UID(f.Edition); e != nil {
-		return platform.Fail(409, "INVALID_EVENT_EDITION")
-	}
+	return phase, err
+}
+
+// storeFact is used by delivery and cutoff reconciliation under the edition writer.
+func (r *Repository) storeFact(ctx context.Context, f domain.Fact) error {
 	tx, e := r.DB.BeginTx(ctx, nil)
 	if e != nil {
 		return e
 	}
 	defer tx.Rollback()
-	var seen int
-	if e = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM inbox_event WHERE consumer_name='ranking-facts' AND event_id=?`, ev.ID).Scan(&seen); e != nil {
-		return e
+	if f.Draw != "" {
+		exists, err := checkDraw(ctx, tx, f)
+		if err != nil || exists {
+			return err
+		}
 	}
-	if seen > 0 {
-		// Replayed events stay idempotent even after the settlement freezes.
-		return tx.Commit()
-	}
-	var settlementStatus string
-	e = tx.QueryRowContext(ctx, `SELECT status FROM ranking_settlement WHERE edition_id=?`, f.Edition).Scan(&settlementStatus)
-	if e != nil && !errors.Is(e, sql.ErrNoRows) {
+	settlementStatus, e := settlementPhase(ctx, tx, f.Edition)
+	if e != nil {
 		return e
 	}
 	if settlementStatus == "FROZEN" || settlementStatus == "AWARDING" || settlementStatus == "COMPLETED" {
+		if f.Draw == "" {
+			var exists bool
+			err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM ranking_entry WHERE edition_id=? AND user_id=?)`, f.Edition, f.User).Scan(&exists)
+			if err != nil || exists {
+				return err
+			}
+		}
 		return platform.Fail(409, "SETTLEMENT_FROZEN")
 	}
-	created, ce := number(f.Created)
-	if ev.Type == "FormalDrawCommitted.v1" {
-		created, ce = number(f.Occurred)
+	if f.Draw == "" {
+		_, e = tx.ExecContext(ctx, `INSERT INTO ranking_entry(edition_id,user_id,score_reached_at_sec)
+			VALUES(?,?,?) AS incoming ON DUPLICATE KEY UPDATE
+			score_reached_at_sec=IF(ranking_entry.score=0,LEAST(ranking_entry.score_reached_at_sec,incoming.score_reached_at_sec),ranking_entry.score_reached_at_sec)`,
+			f.Edition, f.User, f.Created)
+	} else {
+		e = advanceScore(ctx, tx, f)
 	}
-	if ce != nil {
-		return ce
+	if e != nil {
+		return e
 	}
-	_, e = tx.ExecContext(ctx, `INSERT INTO ranking_entry(edition_id,user_id,score_reached_at_sec) VALUES(?,?,?) ON DUPLICATE KEY UPDATE user_id=user_id`, f.Edition, f.User, created)
+	return tx.Commit()
+}
+
+func checkDraw(ctx context.Context, tx *sql.Tx, f domain.Fact) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT CAST(draw_id AS CHAR),CAST(user_id AS CHAR),CAST(edition_id AS CHAR),
+		CAST(draw_seq AS CHAR),CAST(consumed_petals AS CHAR),CAST(occurred_at_sec AS CHAR)
+		FROM score_fact WHERE draw_id=? OR (edition_id=? AND user_id=? AND draw_seq=?)`,
+		f.Draw, f.Edition, f.User, f.Seq)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var old domain.Fact
+		if err = rows.Scan(&old.Draw, &old.User, &old.Edition, &old.Seq, &old.Consumed, &old.Occurred); err != nil {
+			return false, err
+		}
+		if old.Draw != f.Draw || old.User != f.User || old.Edition != f.Edition || old.Seq != f.Seq ||
+			old.Consumed != f.Consumed || old.Occurred != f.Occurred {
+			return false, platform.Fail(409, "FACT_PAYLOAD_CONFLICT")
+		}
+		found = true
+	}
+	return found, rows.Err()
+}
+
+func advanceScore(ctx context.Context, tx *sql.Tx, f domain.Fact) error {
+	_, e := tx.ExecContext(ctx, `INSERT INTO ranking_entry(edition_id,user_id,score_reached_at_sec) VALUES(?,?,?) ON DUPLICATE KEY UPDATE user_id=user_id`, f.Edition, f.User, f.Occurred)
+	if e != nil {
+		return e
+	}
+	_, e = tx.ExecContext(ctx, `INSERT INTO score_fact(draw_id,user_id,edition_id,draw_seq,consumed_petals,occurred_at_sec) VALUES(?,?,?,?,?,?)`, f.Draw, f.User, f.Edition, f.Seq, f.Consumed, f.Occurred)
 	if e != nil {
 		return e
 	}
@@ -78,89 +118,84 @@ func (r *Repository) Consume(ctx context.Context, ev platform.Event) error {
 	if e != nil {
 		return e
 	}
-	priorScore := score
-	if ev.Type == "FormalDrawCommitted.v1" {
-		n, e := number(f.Seq)
-		if e != nil || n == 0 {
-			return platform.Fail(409, "INVALID_SEQUENCE")
+	for seq < math.MaxInt64 {
+		var delta, at int64
+		e = tx.QueryRowContext(ctx, `SELECT consumed_petals,occurred_at_sec FROM score_fact WHERE user_id=? AND edition_id=? AND draw_seq=?`, f.User, f.Edition, seq+1).Scan(&delta, &at)
+		if errors.Is(e, sql.ErrNoRows) {
+			break
 		}
-		cost, e := number(f.Consumed)
-		if e != nil || cost == 0 {
-			return platform.Fail(409, "INVALID_SCORE")
-		}
-		if _, e = platform.UID(f.Draw); e != nil {
-			return platform.Fail(409, "INVALID_DRAW")
-		}
-		var oldUser, oldEdition, oldSeq, oldCost, oldTime string
-		e = tx.QueryRowContext(ctx, `SELECT CAST(user_id AS CHAR),CAST(edition_id AS CHAR),CAST(draw_seq AS CHAR),CAST(consumed_petals AS CHAR),CAST(occurred_at_sec AS CHAR) FROM score_fact WHERE draw_id=? OR (user_id=? AND edition_id=? AND draw_seq=?)`, f.Draw, f.User, f.Edition, n).Scan(&oldUser, &oldEdition, &oldSeq, &oldCost, &oldTime)
-		if e == nil {
-			if oldUser != f.User || oldEdition != f.Edition || oldSeq != f.Seq || oldCost != f.Consumed || oldTime != f.Occurred {
-				return platform.Fail(409, "FACT_PAYLOAD_CONFLICT")
-			}
-		} else if errors.Is(e, sql.ErrNoRows) {
-			_, e = tx.ExecContext(ctx, `INSERT INTO score_fact(draw_id,user_id,edition_id,draw_seq,consumed_petals,occurred_at_sec) VALUES(?,?,?,?,?,?)`, f.Draw, f.User, f.Edition, n, cost, created)
-			if e != nil {
-				return e
-			}
-		} else {
-			return e
-		}
-		for {
-			var delta, at int64
-			e = tx.QueryRowContext(ctx, `SELECT consumed_petals,occurred_at_sec FROM score_fact WHERE user_id=? AND edition_id=? AND draw_seq=?`, f.User, f.Edition, seq+1).Scan(&delta, &at)
-			if errors.Is(e, sql.ErrNoRows) {
-				break
-			}
-			if e != nil {
-				return e
-			}
-			if score > math.MaxInt64-delta {
-				return platform.Fail(409, "SCORE_OVERFLOW")
-			}
-			if seq > 0 && at < reached {
-				return platform.Fail(409, "TIME_REGRESSION")
-			}
-			score += delta
-			seq++
-			reached = at
-		}
-		_, e = tx.ExecContext(ctx, `UPDATE ranking_entry SET score=?,last_contiguous_seq=?,score_reached_at_sec=? WHERE edition_id=? AND user_id=?`, score, seq, reached, f.Edition, f.User)
 		if e != nil {
 			return e
 		}
-		if seq == n && f.Total != "" && f.Total != fmt.Sprint(score) {
-			return platform.Fail(409, "CUMULATIVE_SCORE_MISMATCH")
+		if score > math.MaxInt64-delta {
+			return platform.Fail(409, "SCORE_OVERFLOW")
 		}
-	} else if ev.Type != "ParticipationInitialized.v1" {
-		return platform.Fail(409, "INVALID_EVENT_TYPE")
+		if seq > 0 && at < reached {
+			return platform.Fail(409, "TIME_REGRESSION")
+		}
+		score += delta
+		seq++
+		reached = at
 	}
-	_, e = tx.ExecContext(ctx, `INSERT IGNORE INTO inbox_event(consumer_name,event_id) VALUES('ranking-facts',?)`, ev.ID)
-	if e != nil {
-		return e
+	if f.Seq == fmt.Sprint(seq) && f.Total != "" && f.Total != fmt.Sprint(score) {
+		return platform.Fail(409, "CUMULATIVE_SCORE_MISMATCH")
 	}
-	if e = tx.Commit(); e != nil {
-		return e
-	}
-	return r.cacheUpdate(ctx, ev, priorScore > 0)
+	_, e = tx.ExecContext(ctx, `UPDATE ranking_entry SET score=?,last_contiguous_seq=?,score_reached_at_sec=? WHERE edition_id=? AND user_id=?`, score, seq, reached, f.Edition, f.User)
+	return e
 }
 
 type Entry = domain.Entry
 
 func (r *Repository) Board(ctx context.Context, edition, user string) (domain.Board, error) {
-	if r.Cache != nil {
-		if b, e := r.Cache.Board(ctx, edition, user); e == nil {
-			var users, mine int64
-			if e = r.DB.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(user_id=?),0) FROM ranking_entry WHERE edition_id=?`, user, edition).Scan(&users, &mine); e == nil && b.Count >= users && (mine == 0 || b.Me != nil) {
-				return domain.Board{Top: b.Top, Me: b.Me, Source: "redis"}, nil
+	id, err := platform.UID(edition)
+	if err != nil {
+		return domain.Board{}, err
+	}
+	edition = strconv.FormatUint(id, 10)
+	if value, ok := r.editions.Load(edition); ok {
+		s := value.(*liveEdition)
+		if g := s.generation.Load(); g != nil {
+			op, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
+			b, err := r.Cache.Board(op, g, user)
+			cancel()
+			if err == nil && s.generation.Load() == g {
+				return b, nil
+			}
+			if ctx.Err() == nil {
+				s.generation.CompareAndSwap(g, nil)
 			}
 		}
 	}
+	if r.fallbackReads.Add(1) > 8 {
+		r.fallbackReads.Add(-1)
+		return domain.Board{}, platform.Fail(503, "RANKING_BUSY")
+	}
+	defer r.fallbackReads.Add(-1)
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	b, err := r.sqlBoard(ctx, edition, user)
+	if err == nil && len(b.Top) != 0 && r.Cache != nil {
+		r.edition(edition)
+	}
+	return b, err
+}
+
+func (r *Repository) sqlBoard(ctx context.Context, edition, user string) (domain.Board, error) {
 	tx, e := r.DB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if e != nil {
 		return domain.Board{}, e
 	}
 	defer tx.Rollback()
-	rows, e := tx.QueryContext(ctx, `SELECT CAST(user_id AS CHAR),score,score_reached_at_sec FROM ranking_entry WHERE edition_id=? ORDER BY score DESC,score_reached_at_sec,user_id LIMIT 20`, edition)
+	phase, e := settlementPhase(ctx, tx, edition)
+	if e != nil {
+		return domain.Board{}, e
+	}
+	final := phase == domain.SettlementAwarding || phase == domain.SettlementCompleted
+	topQuery := `SELECT CAST(user_id AS CHAR),score,score_reached_at_sec FROM ranking_entry WHERE edition_id=? ORDER BY score DESC,score_reached_at_sec,user_id LIMIT 20`
+	if final {
+		topQuery = `SELECT CAST(user_id AS CHAR),score,score_reached_at_sec FROM ranking_snapshot WHERE edition_id=? AND final_rank<=20 ORDER BY final_rank`
+	}
+	rows, e := tx.QueryContext(ctx, topQuery, edition)
 	if e != nil {
 		return domain.Board{}, e
 	}
@@ -181,12 +216,18 @@ func (r *Repository) Board(ctx context.Context, edition, user string) (domain.Bo
 	}
 	var me Entry
 	me.User = user
-	e = tx.QueryRowContext(ctx, `SELECT score,score_reached_at_sec FROM ranking_entry WHERE edition_id=? AND user_id=?`, edition, user).Scan(&me.Score, &me.Reached)
+	if final {
+		e = tx.QueryRowContext(ctx, `SELECT score,score_reached_at_sec,final_rank FROM ranking_snapshot WHERE edition_id=? AND user_id=?`, edition, user).Scan(&me.Score, &me.Reached, &me.Rank)
+	} else {
+		e = tx.QueryRowContext(ctx, `SELECT score,score_reached_at_sec FROM ranking_entry WHERE edition_id=? AND user_id=?`, edition, user).Scan(&me.Score, &me.Reached)
+	}
 	var mine *Entry
 	if e == nil {
-		e = tx.QueryRowContext(ctx, `SELECT COUNT(*)+1 FROM ranking_entry WHERE edition_id=? AND (score>? OR(score=? AND score_reached_at_sec<?) OR(score=? AND score_reached_at_sec=? AND user_id<?))`, edition, me.Score, me.Score, me.Reached, me.Score, me.Reached, user).Scan(&me.Rank)
-		if e != nil {
-			return domain.Board{}, e
+		if !final {
+			e = tx.QueryRowContext(ctx, `SELECT COUNT(*)+1 FROM ranking_entry WHERE edition_id=? AND (score>? OR(score=? AND score_reached_at_sec<?) OR(score=? AND score_reached_at_sec=? AND user_id<?))`, edition, me.Score, me.Score, me.Reached, me.Score, me.Reached, user).Scan(&me.Rank)
+			if e != nil {
+				return domain.Board{}, e
+			}
 		}
 		mine = &me
 	} else if !errors.Is(e, sql.ErrNoRows) {

@@ -2,6 +2,7 @@ package application
 
 import (
 	"activity/pkg/platform"
+	"activity/pkg/ratelimit"
 	"activity/services/identity-service/internal/identity/domain"
 	"activity/services/identity-service/internal/identity/infrastructure/security"
 	"context"
@@ -38,9 +39,10 @@ type Repository interface {
 	PublicProfiles(context.Context, []string) (map[string]string, error)
 }
 type Limiter interface {
-	Take(context.Context, string, int, time.Duration) error
-	Failures(context.Context, string) (int, error)
-	Clear(context.Context, string) error
+	Register(context.Context, string) error
+	LoginFailures(context.Context, string) (int, time.Duration, error)
+	RecordLoginFailure(context.Context, string) error
+	ClearLoginFailures(context.Context, string) error
 }
 type Service struct {
 	Repo            Repository
@@ -51,8 +53,8 @@ type Service struct {
 	DummyHash       string
 }
 type Credentials struct {
-	Account  string `json:"account" binding:"required"`
-	Password string `json:"password" binding:"required"`
+	Account  string `json:"account"`
+	Password string `json:"password"`
 	Nickname string `json:"nickname"`
 }
 type Tokens struct {
@@ -68,6 +70,8 @@ func (s *Service) hashSlot(ctx context.Context) (func(), error) {
 		return func() { <-s.HashSlots }, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	default:
+		return nil, platform.Fail(503, "PASSWORD_CAPACITY")
 	}
 }
 func (s *Service) issue(a domain.Account, sid string, expires time.Time) (Tokens, error) {
@@ -87,7 +91,7 @@ func (s *Service) Register(ctx context.Context, c Credentials, ip string) (Token
 	if e := domain.ValidateAccount(c.Account, c.Password, c.Nickname); e != nil {
 		return Tokens{}, platform.Fail(400, "INVALID_ACCOUNT")
 	}
-	if e := s.Limiter.Take(ctx, "register:"+ip, 3, time.Minute); e != nil {
+	if e := s.Limiter.Register(ctx, ip); e != nil {
 		return Tokens{}, e
 	}
 	release, e := s.hashSlot(ctx)
@@ -123,15 +127,17 @@ func (s *Service) Register(ctx context.Context, c Credentials, ip string) (Token
 	return tokens, nil
 }
 func (s *Service) Login(ctx context.Context, c Credentials) (Tokens, error) {
-	if len(c.Account) > 20 || len(c.Password) > 512 {
+	// MySQL's ascii_bin VARCHAR comparison ignores trailing spaces. Reject
+	// aliases before both the lookup and the per-account failure counter.
+	if !domain.ValidAccountName(c.Account) || c.Password == "" || len(c.Password) > 512 {
 		return Tokens{}, platform.Fail(400, "INVALID_REQUEST")
 	}
-	n, e := s.Limiter.Failures(ctx, c.Account)
+	n, retry, e := s.Limiter.LoginFailures(ctx, c.Account)
 	if e != nil {
 		return Tokens{}, e
 	}
 	if n >= 5 {
-		return Tokens{}, platform.Fail(429, "LOGIN_LIMITED")
+		return Tokens{}, &ratelimit.Rejection{Status: 429, Code: "LOGIN_LIMITED", After: retry}
 	}
 	a, e := s.Repo.AccountByName(ctx, c.Account)
 	if e != nil && !errors.Is(e, sql.ErrNoRows) {
@@ -151,7 +157,7 @@ func (s *Service) Login(ctx context.Context, c Credentials) (Tokens, error) {
 		return Tokens{}, e
 	}
 	if !ok || a.UserID == 0 {
-		if e = s.Limiter.Take(ctx, "login:"+c.Account, 1000000, 15*time.Minute); e != nil {
+		if e = s.Limiter.RecordLoginFailure(ctx, c.Account); e != nil {
 			return Tokens{}, e
 		}
 		return Tokens{}, platform.Fail(401, "INVALID_CREDENTIALS")
@@ -159,7 +165,7 @@ func (s *Service) Login(ctx context.Context, c Credentials) (Tokens, error) {
 	if a.Status != "ACTIVE" {
 		return Tokens{}, platform.Fail(403, "ACCOUNT_DISABLED")
 	}
-	if e = s.Limiter.Clear(ctx, c.Account); e != nil {
+	if e = s.Limiter.ClearLoginFailures(ctx, c.Account); e != nil {
 		return Tokens{}, e
 	}
 	sid := platform.Random()
@@ -264,6 +270,9 @@ func (s *Service) Renew(ctx context.Context, raw string) (Tokens, error) {
 	}
 	if strconv.FormatUint(a.UserID, 10) != c.Subject {
 		return Tokens{}, platform.Fail(401, "INVALID_REFRESH")
+	}
+	if session.RevokedAt != nil || !session.ExpiresAt.After(time.Now()) || a.Status != "ACTIVE" {
+		return Tokens{}, platform.Fail(401, "INVALID_SESSION")
 	}
 	t, e := s.issue(a, session.ID, session.ExpiresAt)
 	if e != nil {

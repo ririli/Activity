@@ -2,7 +2,7 @@ package main
 
 import (
 	"activity/pkg/platform"
-	"activity/services/activity-service/internal/participation/domain"
+	"activity/services/activity-service/internal/application"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -19,7 +19,7 @@ func main() {
 	platform.Must(e)
 	edition, e := platform.UID(os.Getenv("EDITION_ID"))
 	platform.Must(e)
-	raw := platform.JSON(domain.DefaultRules())
+	raw := platform.JSON(application.DefaultRules())
 	var obj any
 	platform.Must(json.Unmarshal(raw, &obj))
 	canonical := platform.JSON(obj)

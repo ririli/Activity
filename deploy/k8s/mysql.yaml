@@ -1,0 +1,144 @@
+apiVersion: "apps/v1"
+kind: "StatefulSet"
+metadata:
+  name: "mysql"
+  namespace: "activity"
+  labels:
+    app.kubernetes.io/name: "mysql"
+    app.kubernetes.io/part-of: "activity"
+spec:
+  serviceName: "mysql"
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: "mysql"
+      app.kubernetes.io/part-of: "activity"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: "mysql"
+        app.kubernetes.io/part-of: "activity"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: "RuntimeDefault"
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+      terminationGracePeriodSeconds: 60
+      containers:
+        -
+          name: "mysql"
+          image: "mysql:8.4"
+          imagePullPolicy: "IfNotPresent"
+          ports:
+            -
+              containerPort: 3306
+              name: "mysql"
+          env:
+            -
+              name: "MYSQL_ROOT_PASSWORD"
+              valueFrom:
+                secretKeyRef:
+                  name: "mysql-root"
+                  key: "password"
+            -
+              name: "TZ"
+              value: "UTC"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - "ALL"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          startupProbe:
+            exec:
+              command:
+                - "sh"
+                - "-c"
+                - "MYSQL_PWD=\"$MYSQL_ROOT_PASSWORD\" mysql -h 127.0.0.1 -uroot -Nse \"SELECT 1\""
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command:
+                - "sh"
+                - "-c"
+                - "MYSQL_PWD=\"$MYSQL_ROOT_PASSWORD\" mysql -h 127.0.0.1 -uroot -Nse \"SELECT 1\""
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - "sh"
+                - "-c"
+                - "MYSQL_PWD=\"$MYSQL_ROOT_PASSWORD\" mysql -h 127.0.0.1 -uroot -Nse \"SELECT 1\""
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          volumeMounts:
+            -
+              name: "data"
+              mountPath: "/var/lib/mysql"
+            -
+              name: "run"
+              mountPath: "/var/run/mysqld"
+            -
+              name: "tmp"
+              mountPath: "/tmp"
+            -
+              name: "config"
+              mountPath: "/etc/mysql/conf.d/learning.cnf"
+              subPath: "learning.cnf"
+              readOnly: true
+      volumes:
+        -
+          name: "run"
+          emptyDir: {}
+        -
+          name: "tmp"
+          emptyDir: {}
+        -
+          name: "config"
+          configMap:
+            name: "mysql-config"
+  volumeClaimTemplates:
+    -
+      metadata:
+        name: "data"
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        storageClassName: "local-path"
+        resources:
+          requests:
+            storage: "5Gi"
+---
+apiVersion: "v1"
+kind: "Service"
+metadata:
+  name: "mysql"
+  namespace: "activity"
+  labels:
+    app.kubernetes.io/name: "mysql"
+    app.kubernetes.io/part-of: "activity"
+spec:
+  type: "ClusterIP"
+  selector:
+    app.kubernetes.io/name: "mysql"
+    app.kubernetes.io/part-of: "activity"
+  ports:
+    -
+      port: 3306
+      targetPort: 3306
+      name: "mysql"

@@ -2,6 +2,7 @@ package http
 
 import (
 	"activity/pkg/platform"
+	"activity/pkg/ratelimit"
 	"activity/services/identity-service/internal/identity/application"
 	"github.com/gin-gonic/gin"
 	"net/http"
@@ -12,7 +13,23 @@ import (
 const cookie = "activity_refresh"
 const path = "/api/identity/v1/auth"
 
-func Routes(g *gin.Engine, s *application.Service) {
+type credentials struct {
+	Account  string `json:"account" binding:"required"`
+	Password string `json:"password" binding:"required"`
+	Nickname string `json:"nickname"`
+}
+
+func (v credentials) command() application.Credentials {
+	return application.Credentials{Account: v.Account, Password: v.Password, Nickname: v.Nickname}
+}
+
+func Routes(g *gin.Engine, s *application.Service, limiters ...ratelimit.Limiter) {
+	var limiter ratelimit.Limiter
+	if len(limiters) > 0 {
+		limiter = limiters[0]
+	}
+	meLimit := ratelimit.Gate{Limiter: limiter, Service: "identity", Group: "me", Rule: ratelimit.Configure("RATE_LIMIT_IDENTITY_ME", ratelimit.Rule{Rate: 5, Capacity: 10}), FailOpen: true}
+
 	auth := g.Group(path)
 	auth.Use(func(c *gin.Context) { c.Header("Cache-Control", "no-store") })
 	set := func(c *gin.Context, t application.Tokens, e error) {
@@ -23,19 +40,19 @@ func Routes(g *gin.Engine, s *application.Service) {
 		platform.Respond(c, t, e)
 	}
 	auth.POST("/register", func(c *gin.Context) {
-		var v application.Credentials
+		var v credentials
 		if !platform.Bind(c, &v) {
 			return
 		}
-		t, e := s.Register(c.Request.Context(), v, c.ClientIP())
+		t, e := s.Register(c.Request.Context(), v.command(), c.ClientIP())
 		set(c, t, e)
 	})
 	auth.POST("/login", func(c *gin.Context) {
-		var v application.Credentials
+		var v credentials
 		if !platform.Bind(c, &v) {
 			return
 		}
-		t, e := s.Login(c.Request.Context(), v)
+		t, e := s.Login(c.Request.Context(), v.command())
 		set(c, t, e)
 	})
 	csrf := func(c *gin.Context) {
@@ -58,6 +75,9 @@ func Routes(g *gin.Engine, s *application.Service) {
 	})
 	g.GET("/api/identity/v1/me", func(c *gin.Context) {
 		p, e := s.Introspect(c.Request.Context(), strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer "))
+		if e == nil {
+			e = meLimit.Check(c.Request.Context(), p.UserID)
+		}
 		platform.Respond(c, p, e)
 	})
 	internal := g.Group("/internal/identity/v1", platform.Internal)

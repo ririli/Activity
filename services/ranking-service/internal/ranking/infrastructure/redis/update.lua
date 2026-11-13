@@ -1,54 +1,42 @@
--- IDs remain strings. Only bounded exact integers are converted to Lua numbers.
--- KEYS: board, users, draw fingerprints, fixed bounds, disabled flag.
--- ARGV: user, reverse-ID member, draw ID (empty for init), fingerprint,
---       delta, business second, minimum second, end second.
-local allowed={'zset','hash','hash','hash','string'}
-for i,key in ipairs(KEYS) do
- local typ=redis.call('TYPE',key).ok
- if typ~='none' and typ~=allowed[i] then return redis.error_reply('ranking key type mismatch') end
-end
-if redis.call('EXISTS',KEYS[5])==1 then return -2 end
-local minSec,endSec=tonumber(ARGV[7]),tonumber(ARGV[8])
+-- ARGV: generation, user ID, reverse-ID member, draw ID (empty for init),
+--       delta, business second.
+if not guard() then return -1 end
+local minSec,endSec=unpack(redis.call('HMGET',KEYS[1],'min','end'))
+minSec,endSec=tonumber(minSec),tonumber(endSec)
 local at,delta=tonumber(ARGV[6]),tonumber(ARGV[5])
-if at<minSec or at>endSec then return -3 end
-local oldMin=redis.call('HGET',KEYS[4],'min')
-local oldEnd=redis.call('HGET',KEYS[4],'end')
-if oldMin and (oldMin~=ARGV[7] or oldEnd~=ARGV[8]) then
- redis.call('SET',KEYS[5],'bounds-changed');return -2
-end
-if ARGV[3]~='' then
- local seen=redis.call('HGET',KEYS[3],ARGV[3])
- if seen then
-  if seen~=ARGV[4] then return -1 end
-  return 0
- end
-end
-local raw=redis.call('HGET',KEYS[2],ARGV[1])
+local maxExact=9007199254740991
+if not minSec or not endSec or not at or not delta or at<minSec or at>endSec
+ or delta<0 or delta>maxExact then return -1 end
+
+local draw,member=ARGV[4],ARGV[3]
+if draw~='' and redis.call('SISMEMBER',KEYS[4],draw)==1 then return 0 end
+local raw=redis.call('HGET',KEYS[3],member)
 local score,reached=0,at
 if raw then
  local old=cjson.decode(raw)
- score=tonumber(old.score);reached=tonumber(old.reached)
+ score=tonumber(old.score)
+ local prior=tonumber(old.reached)
  if delta==0 then
   if score>0 then return 0 end
-  reached=math.min(reached,at)
- elseif score>0 then reached=math.max(reached,at)
- else reached=at end
+  reached=math.min(prior,at)
+ elseif score>0 then
+  reached=math.max(prior,at)
+ end
 end
-local maxExact=9007199254740991
-local base=endSec-minSec+1
--- Check before adding/multiplying; failure never records the draw as processed.
-if delta>maxExact-score then redis.call('SET',KEYS[5],'precision');return -2 end
+if delta>maxExact-score then return -1 end
 score=score+delta
+local base=endSec-minSec+1
 local offset=endSec-reached
-if base>maxExact or score>math.floor((maxExact-offset)/base) then
- redis.call('SET',KEYS[5],'precision');return -2
-end
+if base>maxExact or score>math.floor((maxExact-offset)/base) then return -1 end
 local packed=score*base+offset
-if packed>maxExact then redis.call('SET',KEYS[5],'precision');return -2 end
-local metadata=cjson.encode({user_id=ARGV[1],score=string.format('%.0f',score),reached=string.format('%.0f',reached)})
-redis.call('HSET',KEYS[4],'min',ARGV[7],'end',ARGV[8],ARGV[2],ARGV[1])
-redis.call('ZADD',KEYS[1],string.format('%.0f',packed),ARGV[2])
-redis.call('HSET',KEYS[2],ARGV[1],metadata)
-if ARGV[3]~='' then redis.call('HSET',KEYS[3],ARGV[3],ARGV[4]) end
-return 1
+if packed>maxExact then return -1 end
+local metadata=cjson.encode({user_id=ARGV[2],score=string.format('%.0f',score),reached=string.format('%.0f',reached)})
 
+if draw~='' then
+ redis.call('SADD',KEYS[4],draw)
+ redis.call('HINCRBY',KEYS[1],'draws',1)
+end
+redis.call('ZADD',KEYS[2],string.format('%.0f',packed),member)
+redis.call('HSET',KEYS[3],member,metadata)
+if not raw then redis.call('HINCRBY',KEYS[1],'users',1) end
+return 1

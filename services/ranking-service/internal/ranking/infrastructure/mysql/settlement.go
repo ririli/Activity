@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -29,10 +30,10 @@ type manifestUser struct {
 
 func leaseOwner() string {
 	owner := fmt.Sprintf("%s-%d", platform.Env("NODE_ID", "ranking"), os.Getpid())
-	if len(owner) > 64 {
-		owner = owner[:64]
+	if len(owner) > 31 {
+		owner = owner[:31]
 	}
-	return owner
+	return owner + "-" + platform.Random()
 }
 
 func activityBase() string { return platform.Env("ACTIVITY_URL", "http://localhost:8082") }
@@ -41,12 +42,20 @@ func activityBase() string { return platform.Env("ACTIVITY_URL", "http://localho
 // It is safe to call repeatedly; cursors and leases make reconciliation and the
 // final snapshot resumable.
 func (r *Repository) Advance(ctx context.Context, edition string) (domain.SettlementResult, error) {
-	if _, e := platform.UID(edition); e != nil {
+	id, err := platform.UID(edition)
+	if err != nil {
+		return domain.SettlementResult{}, err
+	}
+	edition = strconv.FormatUint(id, 10)
+	s := r.edition(edition)
+	if e := s.lock(ctx); e != nil {
 		return domain.SettlementResult{}, e
 	}
+	defer s.unlock()
 	if _, e := r.DB.ExecContext(ctx, `INSERT INTO ranking_settlement(edition_id,cutoff_manifest,reward_rule_snapshot) VALUES(?,JSON_OBJECT(),JSON_OBJECT('version',1)) ON DUPLICATE KEY UPDATE edition_id=edition_id`, edition); e != nil {
 		return domain.SettlementResult{}, e
 	}
+	s.generation.Store(nil)
 	owner := leaseOwner()
 	res, e := r.DB.ExecContext(ctx, `UPDATE ranking_settlement
 		SET status=IF(status='PENDING','RECONCILING',status),
@@ -118,8 +127,16 @@ func (r *Repository) reconcile(ctx context.Context, edition, owner string, raw [
 				cur.CurrentUser = u.User
 				cur.FactsAfter = "0"
 			}
-			f := domain.Fact{User: u.User, Edition: edition, Created: fmt.Sprint(u.Created)}
-			if e := r.Consume(ctx, platform.Event{ID: fmt.Sprint(platform.ID()), Type: "ParticipationInitialized.v1", Payload: platform.JSON(f)}); e != nil {
+			created := fmt.Sprint(u.Created)
+			hasReached := u.Reached != "" && u.Reached != "0"
+			if u.Seq == "0" && hasReached {
+				created = u.Reached
+			}
+			f := domain.Fact{User: u.User, Edition: edition, Created: created}
+			if e := validateFact("ParticipationInitialized.v1", f); e != nil {
+				return r.retryLater(ctx, edition, owner, e)
+			}
+			if e := r.storeFact(ctx, f); e != nil {
 				return r.retryLater(ctx, edition, owner, e)
 			}
 			cur.Participants++
@@ -129,7 +146,13 @@ func (r *Repository) reconcile(ctx context.Context, edition, owner string, raw [
 					return r.retryLater(ctx, edition, owner, e)
 				}
 				for _, fact := range facts {
-					if e := r.Consume(ctx, platform.Event{ID: fact.Draw, Type: "FormalDrawCommitted.v1", Payload: platform.JSON(fact)}); e != nil {
+					if fact.Edition != edition || fact.User != u.User {
+						return r.retryLater(ctx, edition, owner, platform.Fail(409, "CUTOFF_FACT_SCOPE_MISMATCH"))
+					}
+					if e := validateFact("FormalDrawCommitted.v1", fact); e != nil {
+						return r.retryLater(ctx, edition, owner, e)
+					}
+					if e := r.storeFact(ctx, fact); e != nil {
 						return r.retryLater(ctx, edition, owner, e)
 					}
 					cur.Facts++
@@ -142,11 +165,11 @@ func (r *Repository) reconcile(ctx context.Context, edition, owner string, raw [
 					break
 				}
 			}
-			var score, seq string
-			if e := r.DB.QueryRowContext(ctx, `SELECT CAST(score AS CHAR),CAST(last_contiguous_seq AS CHAR) FROM ranking_entry WHERE edition_id=? AND user_id=?`, edition, u.User).Scan(&score, &seq); e != nil {
+			var score, seq, reached string
+			if e := r.DB.QueryRowContext(ctx, `SELECT CAST(score AS CHAR),CAST(last_contiguous_seq AS CHAR),CAST(score_reached_at_sec AS CHAR) FROM ranking_entry WHERE edition_id=? AND user_id=?`, edition, u.User).Scan(&score, &seq, &reached); e != nil {
 				return r.retryLater(ctx, edition, owner, e)
 			}
-			if score != u.Total || seq != u.Seq {
+			if score != u.Total || seq != u.Seq || (hasReached && reached != u.Reached) {
 				_ = r.failSettlement(ctx, edition, owner, "CUTOFF_RECONCILIATION_FAILED")
 				return domain.SettlementResult{Status: domain.SettlementFailed}, platform.Fail(409, "CUTOFF_RECONCILIATION_FAILED")
 			}

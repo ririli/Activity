@@ -1,0 +1,16 @@
+# Explicitly opt in only for an isolated load project. Daily proxy limits remain
+# in compose.services.yaml; generate .local/sse-load/default.conf first.
+services:
+  notification:
+    environment:
+      # Match the five-connection sid quota during an isolated connection ramp.
+      # The daily stream admission burst remains three.
+      RATE_LIMIT_NOTIFICATION_STREAM_CAPACITY: "5"
+    ulimits:
+      nofile: {soft: 65536, hard: 65536}
+  proxy:
+    ulimits:
+      nofile: {soft: 65536, hard: 65536}
+    volumes:
+      - ./deploy/load/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./.local/sse-load/default.conf:/etc/nginx/conf.d/default.conf:ro

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -146,10 +147,16 @@ func TestBusinessFlow(t *testing.T) {
 	if preview["preview_id"] != same["preview_id"] {
 		t.Fatal("preview changed")
 	}
+	if !reflect.DeepEqual(preview, same) || same["required_petals"] == nil {
+		t.Fatal("preview recovery lost price or results")
+	}
 	confirmed := cmd("preview-confirm", map[string]any{}, 200)
 	again := cmd("preview-confirm", map[string]any{}, 200)
 	if confirmed["draw_id"] != again["draw_id"] {
 		t.Fatal("preview duplicated")
+	}
+	if !reflect.DeepEqual(confirmed, again) || again["results"] == nil {
+		t.Fatal("confirmation recovery lost complete result")
 	}
 	renewed := call("/api/identity/v1/auth/refresh", "", map[string]any{}, 200)
 	if renewed["access_token"] == "" {

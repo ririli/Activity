@@ -1,0 +1,74 @@
+apiVersion: "batch/v1"
+kind: "Job"
+metadata:
+  name: "activity-schema-v1"
+  namespace: "activity"
+  labels:
+    app.kubernetes.io/name: "activity-schema-v1"
+    app.kubernetes.io/part-of: "activity"
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 240
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: "schema"
+        app.kubernetes.io/part-of: "activity"
+        activity-role: "database-job"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: "RuntimeDefault"
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      restartPolicy: "Never"
+      containers:
+        -
+          name: "run"
+          image: "mysql:8.4"
+          imagePullPolicy: "IfNotPresent"
+          command:
+            - "sh"
+            - "-ec"
+            - "until mysql -h mysql -uroot -Nse 'SELECT 1'; do sleep 1; done; for f in /migrations/*.sql; do echo \"Applying $(basename \"$f\")\"; mysql -h mysql -uroot < \"$f\"; done; mysql -h mysql -uroot < /bootstrap/090_users.sql"
+          env:
+            -
+              name: "MYSQL_PWD"
+              valueFrom:
+                secretKeyRef:
+                  name: "mysql-root"
+                  key: "password"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "1"
+              memory: "256Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - "ALL"
+          volumeMounts:
+            -
+              name: "migrations"
+              mountPath: "/migrations"
+              readOnly: true
+            -
+              name: "bootstrap"
+              mountPath: "/bootstrap"
+              readOnly: true
+      volumes:
+        -
+          name: "migrations"
+          configMap:
+            name: "db-migrations"
+        -
+          name: "bootstrap"
+          secret:
+            secretName: "db-users-bootstrap"

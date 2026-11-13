@@ -1,8 +1,8 @@
 # activity-service 活动核心设计方案
 
-日期：2026-11-04。状态：主体已实现；2026-11-05 完成三上下文应用层拆分与批量/结算实现。
+日期：2026-11-05。状态：已采用服务级 application/interfaces 编排与上下文仓储分层；本轮代码测试通过，真实依赖联调尚未重跑。
 
-> 实施说明（2026-11-05）：购买、抽奖、预览、阶段、宝箱、选款、下一轮、逐用户结算已从 MySQL 适配器迁入 `assets/application`、`lottery/application`、`participation/application`；`internal/application.Service` 负责事务、用户锁、幂等恢复和提交后效果，`uow` 提供事务端口，`appstate` 保留事务态持久化原语。MySQL 适配器只保留读取、Bootstrap、任务租约 SQL、排名投影与 Pub/Sub 发布。实现与验收以 [后端实现与验收](后端实现与验收.md) 为准。
+> 最新实施说明：完整业务用例位于 `internal/application`，HTTP、消息与任务触发入口位于 `internal/interfaces`；`assets/lottery/participation` 各自保留领域规则、公开应用能力和仓储实现。已移除共享 `appstate`、旧 `uow` 和 `Legacy`。事务会话只组合仓储能力，同一 `sql.Tx` 绑定三个上下文和 Outbox。当前结构、测试与验证边界见 [分层重构说明](activity-service分层重构说明.md)。
 
 依据：[业务需求 V1.2](Lottery业务需求文档（不含后台）.md)、[持久层 V2](持久层设计方案V2.md)、现有核心库迁移，以及 [identity 方案](identity-service实现方案.md)、[ranking 方案](ranking-service设计方案.md)、[notification 方案](notification-service设计方案.md)。发生差异时，下文明确指出设计增补，不能把建议当成已实现能力。
 
@@ -29,9 +29,9 @@
 |lottery|权重采样、逐抽演算、固定结果、预览状态机|普通抽奖、预览生成/恢复/确认/放弃、抽奖记录|
 |assets|钱包、分类流水、购买限额、奖励与选择权益|购买/补差/礼包、奖励查询/选款、排名奖励入账|
 
-沿用 `services/activity-service/internal/{participation,lottery,assets}/{domain,application,infrastructure,interfaces}`。各模块 `interfaces/http` 使用 Gin 路由、绑定、校验和错误映射；消息消费者是另一种接口适配器。领域不依赖 Gin、SQL、Redis 或 MQ，应用接口使用标准 context.Context。
+服务统一使用 `internal/interfaces/http` 承接 Gin 路由、绑定、校验和错误映射；消息入口在 `interfaces/messaging`，定时触发在 `interfaces/worker`。三个上下文分别保留 `domain/application/infrastructure`。领域和应用层不依赖 Gin、SQL、Redis、MQ 或混合平台包，接口使用标准 context.Context。
 
-lottery 的应用编排通过 participation/assets 的应用端口协作；阶段发奖同样通过资产端口。共用的事务执行器创建一个连接上的事务会话，注入三个模块仓储实现；模块不得私自开启、提交嵌套事务。仓储接口与领域模型不暴露 sql.Tx，基础设施负责绑定。事务、用户互斥、规则加载、时钟、ID、随机源、可靠事件记录及提交后通知均是可替换端口，不建立一个包含全部业务的公共包。
+服务级 `internal/application` 编排抽奖、阶段发奖、预览确认和结算，调用三个上下文公开能力；上下文之间不互相调用应用服务。共用的事务执行器创建一个连接上的事务会话，注入三个模块仓储实现；模块不得私自开启、提交嵌套事务。仓储接口与领域模型不暴露 sql.Tx，基础设施负责绑定。事务、用户互斥、规则加载、时钟、ID、随机源、可靠事件记录及提交后通知均是可替换端口，不建立一个包含全部业务的公共包。
 
 跨服务仅通过认证内部契约通信：identity 提供身份和初始化事件；ranking 消费积分并生成排名奖励；notification 分发弹幕。核心不读写其他服务的库或榜单 Redis。
 

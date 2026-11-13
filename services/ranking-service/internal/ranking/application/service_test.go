@@ -5,7 +5,6 @@ import (
 	"errors"
 	"testing"
 
-	"activity/pkg/platform"
 	"activity/services/ranking-service/internal/ranking/domain"
 )
 
@@ -14,14 +13,12 @@ type fakeBoardRepo struct {
 	err   error
 }
 
-func (f *fakeBoardRepo) Consume(context.Context, platform.Event) error { return nil }
 func (f *fakeBoardRepo) Board(context.Context, string, string) (domain.Board, error) {
 	return f.board, f.err
 }
 func (f *fakeBoardRepo) Advance(context.Context, string) (domain.SettlementResult, error) {
 	return domain.SettlementResult{}, nil
 }
-func (f *fakeBoardRepo) CacheUpdate(context.Context, platform.Event) error { return nil }
 
 type fakeProfiles struct {
 	names map[string]string

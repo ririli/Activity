@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { login as loginApi, register as registerApi, restoreSession as restoreApi, logout as logoutApi } from '@/api/auth'
-import { setAccessToken, clearSession } from '@/api/request'
+import { setAccessToken, clearSession, isAuthenticationError } from '@/api/request'
 import { resetActivitySession } from '@/api/activitySession'
 import type { LoginParams, RegisterParams, AuthResult, ProfileResult } from '@/api/auth'
 
@@ -47,7 +47,11 @@ export const useAuthStore = defineStore('auth', () => {
       if (!result) return false
       apply(result)
       return true
-    } catch {
+    } catch (error) {
+      if (!isAuthenticationError(error)) throw error
+      accessToken.value = null
+      user.value = null
+      clearSession()
       return false
     }
   }
@@ -82,7 +86,8 @@ export const useAuthStore = defineStore('auth', () => {
           }
           apply(result)
           return true
-        } catch {
+        } catch (error) {
+          if (!isAuthenticationError(error)) throw error
           accessToken.value = null
           user.value = null
           clearSession()

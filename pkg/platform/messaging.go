@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"log/slog"
 	"time"
@@ -45,37 +46,74 @@ func Dispatch(ctx context.Context, db *sql.DB, beforePublish ...func(context.Con
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if e := dispatchOne(ctx, db, beforePublish...); e != nil {
-				slog.Error("outbox retry", "error", e)
+			for i := 0; i < 100 && ctx.Err() == nil; i++ {
+				found, e := dispatchNext(ctx, db, publishEvent, beforePublish...)
+				if e != nil {
+					slog.Error("outbox retry", "error", e)
+				}
+				if !found {
+					break
+				}
 			}
 		}
 	}
 }
-func dispatchOne(ctx context.Context, db *sql.DB, beforePublish ...func(context.Context, Event)) error {
+func dispatchNext(ctx context.Context, db *sql.DB, publish func(context.Context, Event) error, beforePublish ...func(context.Context, Event)) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	tx, e := db.BeginTx(ctx, nil)
 	if e != nil {
-		return e
+		return false, e
 	}
 	defer tx.Rollback()
 	var ev Event
-	e = tx.QueryRowContext(ctx, `SELECT CAST(event_id AS CHAR),event_type,payload FROM outbox_event WHERE status='PENDING' AND next_retry_at<=UTC_TIMESTAMP(6) ORDER BY event_id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&ev.ID, &ev.Type, &ev.Payload)
+	var retries int
+	e = tx.QueryRowContext(ctx, `SELECT CAST(event_id AS CHAR),event_type,payload,retry_count FROM outbox_event WHERE status='PENDING' AND next_retry_at<=UTC_TIMESTAMP(6) ORDER BY event_id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&ev.ID, &ev.Type, &ev.Payload, &retries)
 	if errors.Is(e, sql.ErrNoRows) {
-		return nil
+		return false, nil
 	}
 	if e != nil {
-		return e
+		return false, e
 	}
 	for _, hook := range beforePublish {
 		hook(ctx, ev)
 	}
+	if e = publish(ctx, ev); e != nil {
+		// Release the head row before scheduling its retry, including when the
+		// publish deadline expired and database/sql already rolled back the tx.
+		_ = tx.Rollback()
+		retryCtx, stop := context.WithTimeout(context.Background(), time.Second)
+		defer stop()
+		delay := 5 * time.Second << min(retries, 6)
+		delay = min(delay, 5*time.Minute)
+		msg := []rune(e.Error())
+		if len(msg) > 1024 {
+			msg = msg[:1024]
+		}
+		_, retryErr := db.ExecContext(retryCtx, `UPDATE outbox_event SET retry_count=retry_count+1,next_retry_at=?,last_error=? WHERE event_id=? AND status='PENDING'`, time.Now().UTC().Add(delay), string(msg), ev.ID)
+		if retryErr != nil {
+			return false, fmt.Errorf("publish failed: %v; schedule retry: %w", e, retryErr)
+		}
+		return true, e
+	}
+	_, e = tx.ExecContext(ctx, `UPDATE outbox_event SET status='PUBLISHED',published_at=UTC_TIMESTAMP(6) WHERE event_id=?`, ev.ID)
+	if e != nil {
+		return false, e
+	}
+	return true, tx.Commit()
+}
+
+func publishEvent(ctx context.Context, ev Event) error {
 	conn, ch, e := channel()
 	if e != nil {
 		return e
 	}
 	defer conn.Close()
 	defer ch.Close()
+	// amqp091 PublishWithContext does not interrupt socket writes itself.
+	// Closing the connection makes both a blocked write and confirm wait stop.
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 	if e = ch.Confirm(false); e != nil {
 		return e
 	}
@@ -97,11 +135,7 @@ func dispatchOne(ctx context.Context, db *sql.DB, beforePublish ...func(context.
 		return errors.New("unroutable event")
 	default:
 	}
-	_, e = tx.ExecContext(ctx, `UPDATE outbox_event SET status='PUBLISHED',published_at=UTC_TIMESTAMP(6) WHERE event_id=?`, ev.ID)
-	if e != nil {
-		return e
-	}
-	return tx.Commit()
+	return nil
 }
 func Consume(ctx context.Context, name string, keys []string, handle func(context.Context, Event) error) {
 	for ctx.Err() == nil {

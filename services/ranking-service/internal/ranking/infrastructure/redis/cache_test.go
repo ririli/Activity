@@ -1,15 +1,15 @@
 package redis
 
 import (
-	"activity/pkg/platform"
-	"activity/services/ranking-service/internal/ranking/domain"
 	"context"
 	"fmt"
-	rdb "github.com/redis/go-redis/v9"
 	"os"
-	"strings"
 	"sync"
 	"testing"
+
+	"activity/pkg/platform"
+	"activity/services/ranking-service/internal/ranking/domain"
+	rdb "github.com/redis/go-redis/v9"
 )
 
 func TestAtomicRanking(t *testing.T) {
@@ -21,96 +21,72 @@ func TestAtomicRanking(t *testing.T) {
 	client := rdb.NewClient(&rdb.Options{Addr: addr})
 	defer client.Close()
 	edition := fmt.Sprint(platform.ID())
-	cache := &Cache{Client: client, LoadBounds: func(context.Context, string) (Bounds, error) { return Bounds{100, 1000}, nil }}
-	defer client.Del(ctx, cache.keys(edition)...)
-	event := func(user, draw string, cost, at int) platform.Event {
-		f := domain.Fact{User: user, Edition: edition, Draw: draw, Seq: draw, Consumed: fmt.Sprint(cost), Occurred: fmt.Sprint(at)}
-		return platform.Event{Type: "FormalDrawCommitted.v1", Payload: platform.JSON(f)}
+	cache := &Cache{Client: client, LoadBounds: func(context.Context, string) (Bounds, error) {
+		return Bounds{100, 1000}, nil
+	}}
+	g, err := cache.Start(ctx, edition)
+	if err != nil {
+		t.Fatal(err)
 	}
-	init := func(user string, at int) platform.Event {
-		return platform.Event{Type: "ParticipationInitialized.v1", Payload: platform.JSON(domain.Fact{User: user, Edition: edition, Created: fmt.Sprint(at)})}
+	defer cache.Retire(ctx, edition)
+	draw := func(user, id string, cost, at int64) domain.Fact {
+		return domain.Fact{User: user, Draw: id, Consumed: fmt.Sprint(cost), Occurred: fmt.Sprint(at)}
 	}
-	apply := func(ev platform.Event) {
+	apply := func(f domain.Fact) {
 		t.Helper()
-		if e := cache.Apply(ctx, ev); e != nil {
-			t.Fatal(e)
+		if err := cache.Apply(ctx, g, f); err != nil {
+			t.Fatal(err)
 		}
 	}
-	// Later draw arrives first; both HTTP and MQ repeat every draw concurrently.
-	later := event("9007199254740993", "2", 100, 202)
-	earlier := event("9007199254740993", "1", 5, 201)
+
+	const user = "9007199254740993"
+	later, earlier := draw(user, "2", 100, 202), draw(user, "1", 5, 201)
+	apply(later)
 	errs := make(chan error, 64)
 	var wg sync.WaitGroup
 	for i := 0; i < 32; i++ {
 		wg.Add(1)
-		go func() { defer wg.Done(); errs <- cache.Apply(ctx, later); errs <- cache.Apply(ctx, earlier) }()
+		go func() {
+			defer wg.Done()
+			errs <- cache.Apply(ctx, g, later)
+			errs <- cache.Apply(ctx, g, earlier)
+		}()
 	}
 	wg.Wait()
 	close(errs)
-	for e := range errs {
-		if e != nil {
-			t.Fatal(e)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
 		}
 	}
-	apply(init("9007199254740993", 100))
-	b, e := cache.Board(ctx, edition, "9007199254740993")
-	if e != nil {
-		t.Fatal(e)
+	apply(domain.Fact{User: user, Created: "100"})
+	apply(draw("9007199254740992", "3", 105, 202))
+	apply(draw("3", "4", 105, 201))
+	apply(draw("3", "2", 101, 202)) // Redis only checks draw ID; MySQL verifies the fact.
+	for _, at := range []string{"150", "160", "140"} {
+		apply(domain.Fact{User: "7", Created: at})
 	}
-	if b.Me == nil || b.Me.Score != 105 || b.Me.Reached != 202 || b.Me.Rank != 1 {
-		t.Fatalf("incorrect dedup/order: %+v", b.Me)
+	b, err := cache.Board(ctx, g, user)
+	if err != nil || b.Me == nil || b.Me.Score != 105 || b.Me.Reached != 202 || b.Me.Rank != 3 ||
+		len(b.Top) != 4 || b.Top[0].User != "3" || b.Top[0].Score != 105 ||
+		b.Top[1].User != "9007199254740992" || b.Top[3].Score != 0 || b.Top[3].Reached != 140 {
+		t.Fatalf("unexpected ranking: %+v / %v", b, err)
 	}
-	// Same score and second: smaller BIGINT ID comes first without Lua rounding.
-	apply(event("9007199254740992", "3", 105, 202))
-	apply(event("3", "4", 105, 201))
-	b, e = cache.Board(ctx, edition, "9007199254740993")
-	if e != nil {
-		t.Fatal(e)
+	if client.SCard(ctx, g.keys[3]).Val() != 4 {
+		t.Fatal("draw Set should contain exactly four accepted draws")
 	}
-	if len(b.Top) != 3 || b.Top[0].User != "3" || b.Top[1].User != "9007199254740992" || b.Me.Rank != 3 {
-		t.Fatalf("invalid ties: %+v", b)
+	for _, invalid := range []domain.Fact{draw("7", "5", 1<<53-1, 200), draw("7", "6", 1, 99)} {
+		if err := cache.Apply(ctx, g, invalid); err == nil || client.SIsMember(ctx, g.keys[3], invalid.Draw).Val() {
+			t.Fatalf("invalid fact touched the Set: %+v / %v", invalid, err)
+		}
 	}
-	// Reusing a draw with another user, amount, or time must fail without changes.
-	if e = cache.Apply(ctx, event("3", "2", 101, 202)); e == nil || !strings.Contains(e.Error(), "CONFLICT") {
-		t.Fatalf("conflicting draw accepted: %v", e)
+	if err := client.HSet(ctx, g.keys[0], "run_id", "old-run").Err(); err != nil {
+		t.Fatal(err)
 	}
-	b, _ = cache.Board(ctx, edition, "3")
-	if b.Me.Score != 105 {
-		t.Fatal("conflict modified state")
+	if _, err := cache.Board(ctx, g, user); err == nil {
+		t.Fatal("accepted a generation from a different Redis process")
 	}
-	// Zero-score initialization is idempotent and retains earliest creation time.
-	apply(init("7", 150))
-	apply(init("7", 160))
-	apply(init("7", 140))
-	b, _ = cache.Board(ctx, edition, "7")
-	if b.Me.Score != 0 || b.Me.Reached != 140 {
-		t.Fatalf("invalid initialization %+v", b.Me)
-	}
-	// Overflow disables cache and leaves SQL available; the draw is not deduped.
-	apply(event("7", "5", 1<<53-1, 200))
-	if _, e = cache.Board(ctx, edition, "7"); e == nil {
-		t.Fatal("precision failure did not disable cache")
-	}
-	if n := client.HExists(ctx, cache.keys(edition)[2], "5").Val(); n {
-		t.Fatal("overflow marked as applied")
-	}
-}
-func TestInvalidTimeDoesNotWrite(t *testing.T) {
-	addr := os.Getenv("RANKING_TEST_REDIS_ADDR")
-	if addr == "" {
-		t.Skip("requires Redis")
-	}
-	ctx := context.Background()
-	client := rdb.NewClient(&rdb.Options{Addr: addr})
-	defer client.Close()
-	cache := &Cache{Client: client, LoadBounds: func(context.Context, string) (Bounds, error) { return Bounds{100, 200}, nil }}
-	edition := fmt.Sprint(platform.ID())
-	defer client.Del(ctx, cache.keys(edition)...)
-	e := cache.Apply(ctx, platform.Event{Type: "ParticipationInitialized.v1", Payload: platform.JSON(domain.Fact{User: "1", Edition: edition, Created: "99"})})
-	if e == nil {
-		t.Fatal("out of bounds accepted")
-	}
-	if client.Exists(ctx, cache.keys(edition)...).Val() != 0 {
-		t.Fatal("invalid event wrote cache")
+	if err := cache.Apply(ctx, g, draw(user, "7", 1, 203)); err == nil {
+		t.Fatal("wrote a generation from a different Redis process")
 	}
 }

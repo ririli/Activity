@@ -10,9 +10,11 @@ var accountNamePattern = regexp.MustCompile(`^[A-Za-z0-9_]{3,20}$`)
 
 var ErrInvalidAccount = errors.New("invalid account details")
 
+func ValidAccountName(name string) bool { return accountNamePattern.MatchString(name) }
+
 // ValidateAccount preserves account-name case and password bytes exactly.
 func ValidateAccount(name, password, nickname string) error {
-	if !accountNamePattern.MatchString(name) || !utf8.ValidString(password) || !utf8.ValidString(nickname) {
+	if !ValidAccountName(name) || !utf8.ValidString(password) || !utf8.ValidString(nickname) {
 		return ErrInvalidAccount
 	}
 	length := utf8.RuneCountInString(password)

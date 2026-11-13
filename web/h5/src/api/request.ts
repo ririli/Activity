@@ -90,9 +90,10 @@ export function refreshAccessToken(): Promise<string> {
       undefined,
       {
         headers: { 'X-Activity-CSRF': '1' },
+        timeout: 10000,
         withCredentials: true,
       },
-    )
+    ).catch((error: unknown) => { throw toApiError(error) })
     const token = (response.data as { access_token?: string }).access_token
     if (!token) throw new Error('登录状态刷新失败')
     accessToken = token
@@ -114,6 +115,34 @@ request.interceptors.request.use((config) => {
   if (accessToken) config.headers.Authorization = `Bearer ${accessToken}`
   return config
 })
+
+export class ApiError extends Error {
+  constructor(message: string, public readonly status?: number, public readonly code?: string,
+    public readonly retryAfterMs = 0) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+export function retryAfterMs(value: string | null | undefined): number {
+  if (!value) return 0
+  const seconds = Number(value)
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000)
+  const date = Date.parse(value)
+  return Number.isNaN(date) ? 0 : Math.max(0, date - Date.now())
+}
+export function toApiError(error: unknown): ApiError {
+  if (error instanceof ApiError) return error
+  if (axios.isAxiosError(error)) {
+    const status = error.response?.status
+    const code = (error.response?.data as { error?: string } | undefined)?.error
+    return new ApiError(messageFor(status, code), status, code,
+      retryAfterMs(error.response?.headers['retry-after'] as string | undefined))
+  }
+  return new ApiError(error instanceof Error ? error.message : '网络异常，请稍后重试')
+}
+export function isAuthenticationError(error: unknown): boolean {
+  return toApiError(error).status === 401
+}
 
 const ERROR_TEXT: Record<string, string> = {
   INVALID_REQUEST: '请求参数不正确',
@@ -173,7 +202,7 @@ request.interceptors.response.use(
     const original = error.config as (typeof error.config & { _retry?: boolean }) | undefined
 
     if (isAuthEndpoint(original?.url) && (original?.url?.includes('/login') || original?.url?.includes('/register'))) {
-      return Promise.reject(new Error(messageFor(status, code)))
+      return Promise.reject(toApiError(error))
     }
 
     if (status === 401 && original && !original._retry && !isAuthEndpoint(original.url)) {
@@ -183,9 +212,11 @@ request.interceptors.response.use(
         original.headers = original.headers ?? {}
         original.headers.Authorization = `Bearer ${token}`
         return request(original)
-      } catch {
-        forceLogout('登录状态已过期，请重新登录')
-        return Promise.reject(new Error('登录状态已过期，请重新登录'))
+      } catch (refreshError) {
+        const failure = toApiError(refreshError)
+        if (isAuthenticationError(failure)) forceLogout('登录状态已过期，请重新登录')
+        else showToast(failure.message)
+        return Promise.reject(failure)
       }
     }
 
@@ -194,7 +225,7 @@ request.interceptors.response.use(
     } else if (status === 429) {
       showToast(messageFor(status, code))
     }
-    return Promise.reject(new Error(messageFor(status, code)))
+    return Promise.reject(toApiError(error))
   },
 )
 

@@ -2,27 +2,28 @@ package redis
 
 import (
 	"context"
-	"crypto/sha256"
 	_ "embed"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strconv"
-	"sync"
+	"strings"
 
 	"activity/pkg/platform"
 	"activity/services/ranking-service/internal/ranking/domain"
 	rdb "github.com/redis/go-redis/v9"
 )
 
+//go:embed guard.lua
+var guardLua string
+
 //go:embed update.lua
 var updateLua string
 
 //go:embed read.lua
 var readLua string
-var update = rdb.NewScript(updateLua)
-var read = rdb.NewScript(readLua)
+
+var update = rdb.NewScript(guardLua + "\n" + updateLua)
+var read = rdb.NewScript(guardLua + "\n" + readLua)
 var ErrUnavailable = errors.New("ranking cache unavailable")
 
 type Bounds struct {
@@ -32,147 +33,164 @@ type Bounds struct {
 type Cache struct {
 	Client     *rdb.Client
 	LoadBounds func(context.Context, string) (Bounds, error)
-	bounds     sync.Map
 }
 
-func (c *Cache) keys(edition string) []string {
-	prefix := "ranking:" + platform.Env("APP_ENV", "local") + ":{" + edition + "}:"
-	return []string{prefix + "board", prefix + "users", prefix + "draws", prefix + "bounds", prefix + "disabled"}
+// Generation is published by the repository only after the full rebuild.
+type Generation struct {
+	id   string
+	keys []string
 }
-func (c *Cache) Disable(ctx context.Context, edition string) error {
-	return c.Client.Set(ctx, c.keys(edition)[4], "missing-history", 0).Err()
+
+func prefix(edition string) string {
+	return "ranking:" + platform.Env("APP_ENV", "local") + ":{" + edition + "}:"
 }
-func (c *Cache) HasUser(ctx context.Context, edition, user string) (bool, error) {
-	return c.Client.HExists(ctx, c.keys(edition)[1], user).Result()
+
+func legacyKeys(p string) []string {
+	return []string{p + "board", p + "users", p + "draws", p + "bounds", p + "disabled"}
 }
-func (c *Cache) Apply(ctx context.Context, ev platform.Event) error {
-	if ev.Type != "FormalDrawCommitted.v1" && ev.Type != "ParticipationInitialized.v1" {
-		return platform.Fail(409, "INVALID_CACHE_EVENT")
+
+func generationKeys(p string) []string {
+	p += "v2:"
+	return []string{p + "meta", p + "board", p + "users", p + "draws"}
+}
+
+func (c *Cache) Start(ctx context.Context, edition string) (*Generation, error) {
+	b, err := c.LoadBounds(ctx, edition)
+	if err != nil {
+		return nil, err
 	}
-	var f domain.Fact
-	if e := json.Unmarshal(ev.Payload, &f); e != nil {
-		return platform.Fail(409, "INVALID_CACHE_EVENT")
+	if b.Min < 0 || b.End < b.Min || b.End > 1<<53-1 {
+		return nil, ErrUnavailable
 	}
-	user, e := platform.UID(f.User)
-	if e != nil {
-		return e
+	info, err := c.Client.Info(ctx, "server").Result()
+	if err != nil {
+		return nil, err
 	}
-	if fmt.Sprint(user) != f.User {
-		return platform.Fail(409, "NON_CANONICAL_USER_ID")
-	}
-	if _, e = platform.UID(f.Edition); e != nil {
-		return e
-	}
-	atText := f.Created
-	deltaText := "0"
-	draw := ""
-	fingerprint := ""
-	if ev.Type == "FormalDrawCommitted.v1" {
-		if _, e = platform.UID(f.Draw); e != nil {
-			return e
+	var run string
+	for _, line := range strings.Split(info, "\r\n") {
+		if value, ok := strings.CutPrefix(line, "run_id:"); ok {
+			run = value
+			break
 		}
-		draw = f.Draw
-		atText = f.Occurred
-		deltaText = f.Consumed
-		delta, e := strconv.ParseInt(deltaText, 10, 64)
-		if e != nil || delta <= 0 {
-			return platform.Fail(409, "INVALID_CACHE_DELTA")
+	}
+	if run == "" {
+		return nil, ErrUnavailable
+	}
+	p := prefix(edition)
+	g := &Generation{id: platform.Random(), keys: generationKeys(p)}
+	// Reuse the physical keys only after the old generation is unpublished.
+	// The generation token prevents in-flight reads from seeing partial data.
+	_, err = c.Client.TxPipelined(ctx, func(pipe rdb.Pipeliner) error {
+		pipe.Unlink(ctx, append(legacyKeys(p), g.keys...)...)
+		pipe.HSet(ctx, g.keys[0], "generation", g.id, "run_id", run, "min", b.Min, "end", b.End, "users", 0, "draws", 0)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := update.Load(ctx, c.Client).Err(); err != nil {
+		return nil, err
+	}
+	return g, nil
+}
+
+func (c *Cache) Retire(ctx context.Context, edition string) error {
+	p := prefix(edition)
+	return c.Client.Unlink(ctx, append(legacyKeys(p), generationKeys(p)...)...).Err()
+}
+
+func updateArgs(g *Generation, f domain.Fact) ([]any, error) {
+	u, err := platform.UID(f.User)
+	if err != nil {
+		return nil, err
+	}
+	delta, at := "0", f.Created
+	if f.Draw != "" {
+		delta, at = f.Consumed, f.Occurred
+	}
+	return []any{g.id, f.User, domain.Member(u), f.Draw, delta, at}, nil
+}
+
+func (c *Cache) Apply(ctx context.Context, g *Generation, f domain.Fact) error {
+	args, err := updateArgs(g, f)
+	if err != nil {
+		return err
+	}
+	n, err := update.Run(ctx, c.Client, g.keys, args...).Int()
+	if err == nil && n < 0 {
+		return ErrUnavailable
+	}
+	return err
+}
+
+func (c *Cache) ApplyBatch(ctx context.Context, g *Generation, facts []domain.Fact) error {
+	commands := make([]*rdb.Cmd, 0, len(facts))
+	_, err := c.Client.Pipelined(ctx, func(pipe rdb.Pipeliner) error {
+		for _, f := range facts {
+			args, err := updateArgs(g, f)
+			if err != nil {
+				return err
+			}
+			commands = append(commands, update.EvalSha(ctx, pipe, g.keys, args...))
 		}
-		if delta > 1<<53-1 {
-			return c.Disable(ctx, f.Edition)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, cmd := range commands {
+		n, err := cmd.Int()
+		if err != nil {
+			return err
 		}
-		h := sha256.Sum256(platform.JSON([]string{f.User, f.Edition, draw, deltaText, atText, f.Seq}))
-		fingerprint = hex.EncodeToString(h[:])
-	}
-	at, e := strconv.ParseInt(atText, 10, 64)
-	if e != nil || at < 0 || at > 1<<53-1 {
-		return platform.Fail(409, "INVALID_CACHE_TIME")
-	}
-	var b Bounds
-	if v, ok := c.bounds.Load(f.Edition); ok {
-		b = v.(Bounds)
-	} else {
-		b, e = c.LoadBounds(ctx, f.Edition)
-		if e != nil {
-			return e
+		if n < 0 {
+			return ErrUnavailable
 		}
-		if b.Min < 0 || b.End < b.Min || b.End > 1<<53-1 {
-			return platform.Fail(409, "INVALID_CACHE_BOUNDS")
-		}
-		c.bounds.Store(f.Edition, b)
-	}
-	n, e := update.Run(ctx, c.Client, c.keys(f.Edition), f.User, domain.Member(user), draw, fingerprint, deltaText, atText, fmt.Sprint(b.Min), fmt.Sprint(b.End)).Int()
-	if e != nil {
-		return e
-	}
-	if n == -1 {
-		return platform.Fail(409, "DRAW_PAYLOAD_CONFLICT")
-	}
-	if n == -3 {
-		return platform.Fail(409, "INVALID_CACHE_TIME")
 	}
 	return nil
 }
 
-type Board struct {
-	Top   []domain.Entry
-	Me    *domain.Entry
-	Count int64
-}
-
-func (c *Cache) Board(ctx context.Context, edition, user string) (Board, error) {
-	u, e := platform.UID(user)
-	if e != nil {
-		return Board{}, e
+func (c *Cache) Board(ctx context.Context, g *Generation, user string) (domain.Board, error) {
+	u, err := platform.UID(user)
+	if err != nil {
+		return domain.Board{}, err
 	}
-	result, e := read.Run(ctx, c.Client, c.keys(edition), user, domain.Member(u)).Slice()
-	if e != nil {
-		return Board{}, e
+	result, err := read.Run(ctx, c.Client, g.keys, g.id, domain.Member(u)).StringSlice()
+	if err != nil {
+		return domain.Board{}, err
 	}
-	if len(result) == 0 {
-		return Board{}, ErrUnavailable
+	if len(result) < 2 {
+		return domain.Board{}, ErrUnavailable
 	}
-	var b Board
-	b.Top = []domain.Entry{}
-	if e = json.Unmarshal([]byte(result[0].(string)), &b.Count); e != nil {
-		return b, e
-	}
-	decode := func(raw string) (domain.Entry, error) {
-		var m struct {
-			User    string `json:"user_id"`
-			Score   string `json:"score"`
-			Reached string `json:"reached"`
+	b := domain.Board{Top: make([]domain.Entry, 0, len(result)-2), Source: "redis"}
+	if result[0] != "" {
+		v, err := decodeEntry(result[0])
+		if err != nil {
+			return b, err
 		}
-		e := json.Unmarshal([]byte(raw), &m)
-		if e != nil {
-			return domain.Entry{}, e
+		v.Rank, err = strconv.ParseInt(result[1], 10, 64)
+		if err != nil {
+			return b, err
 		}
-		score, e := strconv.ParseInt(m.Score, 10, 64)
-		if e != nil {
-			return domain.Entry{}, e
-		}
-		reached, e := strconv.ParseInt(m.Reached, 10, 64)
-		return domain.Entry{User: m.User, Score: score, Reached: reached}, e
-	}
-	if raw, ok := result[1].(string); ok && raw != "" {
-		v, e := decode(raw)
-		if e != nil {
-			return b, e
-		}
-		rank, e := strconv.ParseInt(result[2].(string), 10, 64)
-		if e != nil {
-			return b, e
-		}
-		v.Rank = rank
 		b.Me = &v
 	}
-	for i := 3; i < len(result); i++ {
-		v, e := decode(result[i].(string))
-		if e != nil {
-			return b, e
+	for i, raw := range result[2:] {
+		v, err := decodeEntry(raw)
+		if err != nil {
+			return b, err
 		}
-		v.Rank = int64(i - 2)
+		v.Rank = int64(i + 1)
 		b.Top = append(b.Top, v)
 	}
 	return b, nil
+}
+
+func decodeEntry(raw string) (domain.Entry, error) {
+	var m struct {
+		User    string `json:"user_id"`
+		Score   int64  `json:"score,string"`
+		Reached int64  `json:"reached,string"`
+	}
+	err := json.Unmarshal([]byte(raw), &m)
+	return domain.Entry{User: m.User, Score: m.Score, Reached: m.Reached}, err
 }

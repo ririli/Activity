@@ -21,11 +21,14 @@ type Wallet struct {
 
 // Apply validates and applies one asset delta without touching persistence.
 func (w *Wallet) Apply(asset string, delta int64) (int64, error) {
+	if asset != Gold && asset != Petal {
+		return 0, errors.New("invalid asset")
+	}
 	balance := w.Petals
 	if asset == Gold {
 		balance = w.Gold
 	}
-	if delta > 0 && balance > math.MaxInt64-delta || delta < 0 && balance < -delta {
+	if delta > 0 && balance > math.MaxInt64-delta || delta < 0 && (delta == math.MinInt64 || balance < -delta) {
 		return 0, ErrInsufficient
 	}
 	balance += delta
@@ -36,3 +39,5 @@ func (w *Wallet) Apply(asset string, delta int64) (int64, error) {
 	}
 	return balance, nil
 }
+
+func InitialWallet() Wallet { return Wallet{Gold: 10_000_000, Petals: 100_000_000, LedgerSeq: 2} }

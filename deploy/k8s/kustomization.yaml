@@ -1,0 +1,27 @@
+apiVersion: "kustomize.config.k8s.io/v1beta1"
+kind: "Kustomization"
+namespace: "activity"
+resources:
+  - "namespace.yaml"
+  - "config.yaml"
+  - "mysql.yaml"
+  - "redis.yaml"
+  - "rabbitmq.yaml"
+  - "identity.yaml"
+  - "activity.yaml"
+  - "ranking.yaml"
+  - "notification.yaml"
+  - "web.yaml"
+  - "network-policies.yaml"
+  - "rbac.yaml"
+configMapGenerator:
+  -
+    name: "web-nginx"
+    files:
+      - "default.conf=nginx.conf"
+  -
+    name: "web-main"
+    files:
+      - "nginx.conf=nginx-main.conf"
+generatorOptions:
+  disableNameSuffixHash: false

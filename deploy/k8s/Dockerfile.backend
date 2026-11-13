@@ -1,0 +1,16 @@
+FROM golang:1.25.1-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum go.work go.work.sum ./
+COPY pkg ./pkg
+COPY contracts ./contracts
+COPY services ./services
+ARG SERVICE
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    mkdir /out && CGO_ENABLED=0 go build -trimpath -o /out/server ./services/${SERVICE}/cmd/server && \
+    if [ "$SERVICE" = "activity-service" ]; then CGO_ENABLED=0 go build -trimpath -o /out/seed ./services/activity-service/cmd/seed; fi
+FROM alpine:3.22
+RUN apk add --no-cache ca-certificates tzdata && adduser -D -u 10001 app
+COPY --from=build /out/ /
+USER 10001:10001
+EXPOSE 8080 9090
+ENTRYPOINT ["/server"]

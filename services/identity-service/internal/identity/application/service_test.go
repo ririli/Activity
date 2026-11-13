@@ -230,3 +230,23 @@ func TestRenewSuccessDoesNotMarkRevocation(t *testing.T) {
 		t.Fatal("successful rotation must not revoke")
 	}
 }
+
+func TestRenewRejectsInvalidSessionBeforeIssuingTokens(t *testing.T) {
+	for _, state := range []string{"expired", "revoked", "disabled"} {
+		t.Run(state, func(t *testing.T) {
+			repo, rev := activeFixture()
+			s, _, refresh := testService(repo, rev)
+			now := time.Now()
+			switch state {
+			case "expired":
+				repo.session.ExpiresAt = now.Add(-time.Second)
+			case "revoked":
+				repo.session.RevokedAt = &now
+			case "disabled":
+				repo.account.Status = "DISABLED"
+			}
+			_, err := s.Renew(context.Background(), refresh)
+			assertFault(t, err, 401, "INVALID_SESSION")
+		})
+	}
+}

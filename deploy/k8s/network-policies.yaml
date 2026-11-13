@@ -1,0 +1,575 @@
+apiVersion: "networking.k8s.io/v1"
+kind: "NetworkPolicy"
+metadata:
+  name: "default-deny"
+  namespace: "activity"
+  labels:
+    app.kubernetes.io/name: "default-deny"
+    app.kubernetes.io/part-of: "activity"
+spec:
+  podSelector: {}
+  policyTypes:
+    - "Ingress"
+    - "Egress"
+---
+apiVersion: "networking.k8s.io/v1"
+kind: "NetworkPolicy"
+metadata:
+  name: "allow-dns"
+  namespace: "activity"
+  labels:
+    app.kubernetes.io/name: "allow-dns"
+    app.kubernetes.io/part-of: "activity"
+spec:
+  podSelector: {}
+  policyTypes:
+    - "Egress"
+  egress:
+    -
+      to:
+        -
+          namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: "kube-system"
+          podSelector:
+            matchLabels:
+              k8s-app: "kube-dns"
+      ports:
+        -
+          protocol: "UDP"
+          port: 53
+        -
+          protocol: "TCP"
+          port: 53
+---
+apiVersion: "networking.k8s.io/v1"
+kind: "NetworkPolicy"
+metadata:
+  name: "web-ingress"
+  namespace: "activity"
+  labels:
+    app.kubernetes.io/name: "web-ingress"
+    app.kubernetes.io/part-of: "activity"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: "web"
+  policyTypes:
+    - "Ingress"
+    - "Egress"
+  ingress:
+    -
+      from:
+        -
+          namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: "kube-system"
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "traefik"
+      ports:
+        -
+          protocol: "TCP"
+          port: 8080
+  egress:
+    -
+      to:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "identity"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "activity"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "ranking"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "notification"
+      ports:
+        -
+          protocol: "TCP"
+          port: 8080
+---
+apiVersion: "networking.k8s.io/v1"
+kind: "NetworkPolicy"
+metadata:
+  name: "identity-traffic"
+  namespace: "activity"
+  labels:
+    app.kubernetes.io/name: "identity-traffic"
+    app.kubernetes.io/part-of: "activity"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: "identity"
+  policyTypes:
+    - "Ingress"
+    - "Egress"
+  ingress:
+    -
+      from:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "web"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "identity"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "activity"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "ranking"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "notification"
+      ports:
+        -
+          protocol: "TCP"
+          port: 8080
+        -
+          protocol: "TCP"
+          port: 9090
+  egress:
+    -
+      to:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "redis"
+      ports:
+        -
+          protocol: "TCP"
+          port: 6379
+    -
+      to:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "mysql"
+      ports:
+        -
+          protocol: "TCP"
+          port: 3306
+    -
+      to:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "rabbitmq"
+      ports:
+        -
+          protocol: "TCP"
+          port: 5672
+    -
+      to:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "identity"
+      ports:
+        -
+          protocol: "TCP"
+          port: 8080
+        -
+          protocol: "TCP"
+          port: 9090
+---
+apiVersion: "networking.k8s.io/v1"
+kind: "NetworkPolicy"
+metadata:
+  name: "activity-traffic"
+  namespace: "activity"
+  labels:
+    app.kubernetes.io/name: "activity-traffic"
+    app.kubernetes.io/part-of: "activity"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: "activity"
+  policyTypes:
+    - "Ingress"
+    - "Egress"
+  ingress:
+    -
+      from:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "web"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "identity"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "activity"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "ranking"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "notification"
+      ports:
+        -
+          protocol: "TCP"
+          port: 8080
+  egress:
+    -
+      to:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "redis"
+      ports:
+        -
+          protocol: "TCP"
+          port: 6379
+    -
+      to:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "mysql"
+      ports:
+        -
+          protocol: "TCP"
+          port: 3306
+    -
+      to:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "rabbitmq"
+      ports:
+        -
+          protocol: "TCP"
+          port: 5672
+    -
+      to:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "identity"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "ranking"
+      ports:
+        -
+          protocol: "TCP"
+          port: 8080
+        -
+          protocol: "TCP"
+          port: 9090
+---
+apiVersion: "networking.k8s.io/v1"
+kind: "NetworkPolicy"
+metadata:
+  name: "ranking-traffic"
+  namespace: "activity"
+  labels:
+    app.kubernetes.io/name: "ranking-traffic"
+    app.kubernetes.io/part-of: "activity"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: "ranking"
+  policyTypes:
+    - "Ingress"
+    - "Egress"
+  ingress:
+    -
+      from:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "web"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "identity"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "activity"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "ranking"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "notification"
+      ports:
+        -
+          protocol: "TCP"
+          port: 8080
+  egress:
+    -
+      to:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "redis"
+      ports:
+        -
+          protocol: "TCP"
+          port: 6379
+    -
+      to:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "mysql"
+      ports:
+        -
+          protocol: "TCP"
+          port: 3306
+    -
+      to:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "rabbitmq"
+      ports:
+        -
+          protocol: "TCP"
+          port: 5672
+    -
+      to:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "identity"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "activity"
+      ports:
+        -
+          protocol: "TCP"
+          port: 8080
+        -
+          protocol: "TCP"
+          port: 9090
+---
+apiVersion: "networking.k8s.io/v1"
+kind: "NetworkPolicy"
+metadata:
+  name: "notification-traffic"
+  namespace: "activity"
+  labels:
+    app.kubernetes.io/name: "notification-traffic"
+    app.kubernetes.io/part-of: "activity"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: "notification"
+  policyTypes:
+    - "Ingress"
+    - "Egress"
+  ingress:
+    -
+      from:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "web"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "identity"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "activity"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "ranking"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "notification"
+      ports:
+        -
+          protocol: "TCP"
+          port: 8080
+  egress:
+    -
+      to:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "redis"
+      ports:
+        -
+          protocol: "TCP"
+          port: 6379
+    -
+      to:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "identity"
+      ports:
+        -
+          protocol: "TCP"
+          port: 8080
+        -
+          protocol: "TCP"
+          port: 9090
+---
+apiVersion: "networking.k8s.io/v1"
+kind: "NetworkPolicy"
+metadata:
+  name: "mysql-clients"
+  namespace: "activity"
+  labels:
+    app.kubernetes.io/name: "mysql-clients"
+    app.kubernetes.io/part-of: "activity"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: "mysql"
+  policyTypes:
+    - "Ingress"
+  ingress:
+    -
+      from:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "identity"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "activity"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "ranking"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "schema"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "seed"
+      ports:
+        -
+          protocol: "TCP"
+          port: 3306
+---
+apiVersion: "networking.k8s.io/v1"
+kind: "NetworkPolicy"
+metadata:
+  name: "redis-clients"
+  namespace: "activity"
+  labels:
+    app.kubernetes.io/name: "redis-clients"
+    app.kubernetes.io/part-of: "activity"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: "redis"
+  policyTypes:
+    - "Ingress"
+  ingress:
+    -
+      from:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "identity"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "activity"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "ranking"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "notification"
+      ports:
+        -
+          protocol: "TCP"
+          port: 6379
+---
+apiVersion: "networking.k8s.io/v1"
+kind: "NetworkPolicy"
+metadata:
+  name: "rabbitmq-clients"
+  namespace: "activity"
+  labels:
+    app.kubernetes.io/name: "rabbitmq-clients"
+    app.kubernetes.io/part-of: "activity"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: "rabbitmq"
+  policyTypes:
+    - "Ingress"
+  ingress:
+    -
+      from:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "identity"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "activity"
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "ranking"
+      ports:
+        -
+          protocol: "TCP"
+          port: 5672
+---
+apiVersion: "networking.k8s.io/v1"
+kind: "NetworkPolicy"
+metadata:
+  name: "database-jobs"
+  namespace: "activity"
+  labels:
+    app.kubernetes.io/name: "database-jobs"
+    app.kubernetes.io/part-of: "activity"
+spec:
+  podSelector:
+    matchLabels:
+      activity-role: "database-job"
+  policyTypes:
+    - "Egress"
+  egress:
+    -
+      to:
+        -
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: "mysql"
+      ports:
+        -
+          protocol: "TCP"
+          port: 3306

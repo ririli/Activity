@@ -18,10 +18,8 @@ type ProfileProvider interface {
 }
 
 type Repository interface {
-	Consume(context.Context, platform.Event) error
 	Board(context.Context, string, string) (domain.Board, error)
 	Advance(context.Context, string) (domain.SettlementResult, error)
-	CacheUpdate(context.Context, platform.Event) error
 }
 type Service struct {
 	Repo     Repository

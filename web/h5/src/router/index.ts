@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { showToast } from 'vant'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -28,17 +29,22 @@ const router = createRouter({
 // Refresh cookie before deciding whether a route is authorized.
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
-  if (to.meta.requiresAuth) {
-    const ok = await auth.initFromStorage()
-    if (!ok) {
-      return { name: 'Login', query: { redirect: to.fullPath } }
+  try {
+    if (to.meta.requiresAuth) {
+      const ok = await auth.initFromStorage()
+      if (!ok) {
+        return { name: 'Login', query: { redirect: to.fullPath } }
+      }
     }
+    if (to.name === 'Login') {
+      const ok = await auth.initFromStorage()
+      if (ok) return { name: 'Home' }
+    }
+    return true
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : '服务暂时不可用，请稍后重试')
+    return false
   }
-  if (to.name === 'Login') {
-    const ok = await auth.initFromStorage()
-    if (ok) return { name: 'Home' }
-  }
-  return true
 })
 
 export default router

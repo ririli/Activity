@@ -2,8 +2,9 @@ package http
 
 import (
 	"activity/pkg/platform"
+	"activity/pkg/ratelimit"
 	"activity/services/notification-service/internal/notification/application"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"net/http"
@@ -11,7 +12,13 @@ import (
 	"time"
 )
 
-func Routes(g *gin.Engine, h *application.Hub) {
+func Routes(g *gin.Engine, h *application.Hub, limiters ...ratelimit.Limiter) {
+	var limiter ratelimit.Limiter
+	if len(limiters) > 0 {
+		limiter = limiters[0]
+	}
+	streamLimit := ratelimit.Gate{Limiter: limiter, Service: "notification", Group: "stream", Rule: ratelimit.Configure("RATE_LIMIT_NOTIFICATION_STREAM", ratelimit.Rule{Rate: 0.2, Capacity: 3}), FailOpen: false}
+
 	g.GET("/health/subscription", func(c *gin.Context) {
 		if !h.Ready() {
 			c.Status(503)
@@ -20,11 +27,18 @@ func Routes(g *gin.Engine, h *application.Hub) {
 		}
 	})
 	g.GET("/api/notification/v1/barrage/stream", platform.Auth, func(c *gin.Context) {
+		if !admit(c, streamLimit) {
+			return
+		}
 		p := c.MustGet("principal").(platform.Principal)
 		conn, e := h.Subscribe(p.SessionID)
 		if e != nil {
 			c.Header("Retry-After", "5")
-			platform.Respond(c, nil, e)
+			status := http.StatusServiceUnavailable
+			if errors.Is(e, application.ErrSessionLimit) {
+				status = http.StatusTooManyRequests
+			}
+			platform.Respond(c, nil, platform.Fail(status, e.Error()))
 			return
 		}
 		defer h.Unsubscribe(conn)
@@ -51,6 +65,8 @@ func Routes(g *gin.Engine, h *application.Hub) {
 		token := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
 		for {
 			select {
+			case <-h.Done():
+				return
 			case <-c.Request.Context().Done():
 				return
 			case <-availability.C:
@@ -60,7 +76,7 @@ func Routes(g *gin.Engine, h *application.Hub) {
 				}
 			case <-verify.C:
 				if _, e := platform.Verify(c.Request.Context(), token); e != nil {
-					write("event: auth_required\ndata: {}\n\n")
+					write(verificationFailure(e))
 					return
 				}
 			case <-heartbeat.C:
@@ -71,11 +87,21 @@ func Routes(g *gin.Engine, h *application.Hub) {
 				if !m.Expires.After(time.Now()) {
 					continue
 				}
-				b, _ := json.Marshal(map[string]any{"message_id": m.ID, "display_name": m.Name, "item_name": m.ItemName, "quantity": m.Quantity, "expires_at": m.Expires})
-				if !write("event: barrage\nid: " + m.ID + "\ndata: " + string(b) + "\n\n") {
+				if !h.Ready() {
+					return
+				}
+				if !write(m.Data) {
 					return
 				}
 			}
 		}
 	})
+}
+
+func verificationFailure(err error) string {
+	var f *platform.Fault
+	if errors.As(err, &f) && (f.Status == http.StatusUnauthorized || f.Status == http.StatusForbidden) {
+		return "event: auth_required\ndata: {}\n\n"
+	}
+	return "event: unavailable\ndata: {}\n\n"
 }
