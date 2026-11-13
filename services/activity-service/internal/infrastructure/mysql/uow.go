@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"activity/pkg/hourly"
 	app "activity/services/activity-service/internal/application"
 	assets "activity/services/activity-service/internal/assets/infrastructure/mysql"
 	"activity/services/activity-service/internal/fault"
@@ -14,12 +15,12 @@ import (
 
 type UnitOfWork struct{ DB *sql.DB }
 
-func (m UnitOfWork) session(ctx context.Context, tx *sql.Tx, s app.Scope) app.Session {
+func (m UnitOfWork) session(ctx context.Context, tx *sql.Tx, s app.Scope, o *outbox) app.Session {
 	port := sqlkit.Wrap(tx)
 	a := &assets.Repository{Tx: port, Ctx: ctx, User: s.User, Edition: s.Edition, Biz: s.Biz}
 	l := &lottery.Repository{Tx: port, Ctx: ctx, User: s.User, Edition: s.Edition, Biz: s.Biz}
 	p := &participation.Repository{Tx: port, Ctx: ctx, User: s.User, Edition: s.Edition, Biz: s.Biz}
-	return app.Session{Assets: a, Lottery: l, Participation: p, Outbox: outbox{ctx, tx}, BindRound: func(round int, progress int64) {
+	return app.Session{Assets: a, Lottery: l, Participation: p, Outbox: o, AdmitHourly: o.admit(s), HourlyGrant: hourlyGrantStore{tx}, BindRound: func(round int, progress int64) {
 		a.Round = round
 		l.Round = round
 		p.Round = round
@@ -34,7 +35,12 @@ func (m UnitOfWork) Within(ctx context.Context, s app.Scope, fn func(app.Session
 		return err
 	}
 	defer tx.Rollback()
-	if err = fn(m.session(ctx, tx, s)); err != nil {
+	o := &outbox{ctx: ctx, tx: tx}
+	session := m.session(ctx, tx, s, o)
+	if err = fn(session); err != nil {
+		return err
+	}
+	if err = o.flush(s); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
@@ -48,15 +54,26 @@ func (m UnitOfWork) Read(ctx context.Context, s app.Scope, fn func(app.Session) 
 		return err
 	}
 	defer tx.Rollback()
-	return fn(m.session(ctx, tx, s))
+	return fn(m.session(ctx, tx, s, &outbox{ctx: ctx, tx: tx}))
 }
 
 type outbox struct {
-	ctx context.Context
-	tx  *sql.Tx
+	ctx      context.Context
+	tx       *sql.Tx
+	position hourly.Position
+	pending  []outboxEntry
 }
 
-func (o outbox) Append(ev app.Event, user, aggregate uint64) error {
+type outboxEntry struct {
+	event           app.Event
+	user, aggregate uint64
+}
+
+func (o *outbox) Append(ev app.Event, user, aggregate uint64) error {
+	if o.position.Cutoff != 0 && (ev.Type == "FormalDrawCommitted.v1" || ev.Type == "ParticipationInitialized.v1") {
+		o.pending = append(o.pending, outboxEntry{ev, user, aggregate})
+		return nil
+	}
 	_, err := o.tx.ExecContext(o.ctx, `INSERT INTO outbox_event(event_id,event_type,aggregate_id,user_id,payload) VALUES(?,?,?,?,?)`, ev.ID, ev.Type, aggregate, user, ev.Payload)
 	return err
 }

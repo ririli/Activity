@@ -18,12 +18,15 @@ func (s *Repository) SaveGrants(grants []app.Grant) error {
 			finalName = nil
 			candidates = platform.JSON(p.Choices)
 		}
-		var draw, no any
+		var draw, no, round any
+		if g.Round != 0 {
+			round = g.Round
+		}
 		if g.DrawID != 0 {
 			draw = g.DrawID
 			no = g.No
 		}
-		rows = append(rows, []any{g.ID, s.User, s.Edition, g.Round, g.Source, g.SourceID, g.No, draw, no, p.Code, p.Name, p.Quantity, candidates, status, finalID, finalName})
+		rows = append(rows, []any{g.ID, s.User, s.Edition, round, g.Source, g.SourceID, g.No, draw, no, p.Code, p.Name, p.Quantity, candidates, status, finalID, finalName})
 	}
 	return sqlkit.BatchInsert(s.Ctx, s.Tx, "reward_grant", []string{"grant_id", "user_id", "edition_id", "round_no", "source_type", "source_id", "source_entry_no", "draw_id", "draw_no", "original_reward_code", "original_item_name", "quantity", "candidate_snapshot", "status", "final_item_id", "final_item_name"}, rows)
 }

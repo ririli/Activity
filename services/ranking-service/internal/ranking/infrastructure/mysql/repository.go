@@ -19,6 +19,7 @@ import (
 type Repository struct {
 	DB            *sql.DB
 	Cache         *cache.Cache
+	ProjectHourly func(context.Context, domain.Fact) error
 	editions      sync.Map
 	fallbackReads atomic.Int32
 }

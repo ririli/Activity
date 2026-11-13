@@ -27,6 +27,8 @@ type Session struct {
 	Participation participation.Repository
 	Outbox        Outbox
 	BindRound     func(int, int64)
+	AdmitHourly   func(time.Time) (time.Time, error)
+	HourlyGrant   HourlyGrantStore
 }
 type UnitOfWork interface {
 	Within(context.Context, Scope, func(Session) error) error

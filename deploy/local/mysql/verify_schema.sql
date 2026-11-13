@@ -1,4 +1,4 @@
--- Read-only inspection after importing migrations. Expected counts: 3 / 32 / 7.
+-- Read-only inspection after importing migrations. Expected counts: 3 / 35 / 9.
 SELECT TABLE_SCHEMA, COUNT(*) AS table_count,
        SUM(ENGINE = 'InnoDB') AS innodb_count
 FROM information_schema.TABLES

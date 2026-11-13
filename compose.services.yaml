@@ -25,6 +25,7 @@ services:
     volumes:
       - ./services/activity-service/migrations/003_ranking_projection.sql:/docker-entrypoint-initdb.d/022_core_projection.sql:ro
       - ./services/activity-service/migrations/004_settlement_scheduling.sql:/docker-entrypoint-initdb.d/023_activity_settlement.sql:ro
+      - ./services/activity-service/migrations/005_hourly_ranking.sql:/docker-entrypoint-initdb.d/024_activity_hourly.sql:ro
       - ./deploy/local/mysql/090_app_users.sql:/docker-entrypoint-initdb.d/090_users.sql:ro
   identity:
     <<: *common
@@ -69,6 +70,7 @@ services:
       <<: *env
       MYSQL_DSN: ranking_app:dev-local-ranking@tcp(mysql:3306)/activity_ranking
       NODE_ID: 3
+      RANKING_REDIS_SHARD_ADDRS: ${RANKING_REDIS_SHARD_ADDRS:-}
       RATE_LIMIT_RANKING_BOARD_RATE: ${RATE_LIMIT_RANKING_BOARD_RATE:-2}
       RATE_LIMIT_RANKING_BOARD_CAPACITY: ${RATE_LIMIT_RANKING_BOARD_CAPACITY:-5}
       IDENTITY_GRPC_ADDR: identity:9090

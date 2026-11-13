@@ -31,6 +31,7 @@ func main() {
 	defer limiter.Close()
 	g := platform.Router(db, redis)
 	httpapi.Routes(g, service, limiter)
+	httpapi.HourlyRoutes(g, app.HourlyService{Queries: &store.Queries{DB: db}, UoW: service.UoW, NewID: platform.ID})
 	platform.Run(g, func(ctx context.Context) {
 		go platform.Dispatch(ctx, db)
 		go settlement.Run(ctx)

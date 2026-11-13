@@ -3,6 +3,7 @@ package main
 import (
 	"activity/pkg/platform"
 	"activity/services/activity-service/internal/application"
+	store "activity/services/activity-service/internal/infrastructure/mysql"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -27,8 +28,12 @@ func main() {
 	tx, e := db.BeginTx(context.Background(), nil)
 	platform.Must(e)
 	defer tx.Rollback()
-	_, e = tx.Exec(`INSERT INTO activity_edition(edition_id,activity_code,name,starts_at,ends_at,status,active_rule_version) VALUES(?,'lottery','花朵抽奖',?,?,'ACTIVE',1)`, edition, start.UTC(), end.UTC())
+	hourlyEnabled := os.Getenv("EDITION_HOURLY_RANKING") == "true"
+	_, e = tx.Exec(`INSERT INTO activity_edition(edition_id,activity_code,name,starts_at,ends_at,status,active_rule_version,hourly_ranking_enabled) VALUES(?,'lottery','花朵抽奖',?,?,'ACTIVE',1,?)`, edition, start.UTC(), end.UTC(), hourlyEnabled)
 	platform.Must(e)
+	if hourlyEnabled {
+		platform.Must(store.PrepareHourlyWindows(context.Background(), tx, edition, start, end))
+	}
 	_, e = tx.Exec(`INSERT INTO activity_rule_version(edition_id,version,schema_version,rule_json,checksum) VALUES(?,1,1,?,?)`, edition, canonical, hash[:])
 	platform.Must(e)
 	platform.Must(tx.Commit())

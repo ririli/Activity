@@ -34,6 +34,10 @@ func (s Service) newWork(tx Session, scope Scope, nickname string) *work {
 	return &work{session: tx, scope: scope, nickname: nickname, runtime: s.Runtime, assets: assetsapp.Service{Repo: tx.Assets, NewID: s.Runtime.NewID}, lottery: lotteryapp.Service{Repo: tx.Lottery, Random: s.Runtime.Random, Now: s.Runtime.Now}, participation: partapp.Service{Repo: tx.Participation}}
 }
 func (s Service) mutate(ctx context.Context, a Actor, active bool, fn func(*work) (any, error)) (any, error) {
+	return s.mutateWithRanking(ctx, a, active, false, fn)
+}
+
+func (s Service) mutateWithRanking(ctx context.Context, a Actor, active, scoring bool, fn func(*work) (any, error)) (any, error) {
 	user, err := uid(a.User)
 	if err != nil {
 		return nil, err
@@ -57,7 +61,7 @@ func (s Service) mutate(ctx context.Context, a Actor, active bool, fn func(*work
 	var completed *work
 	err = s.UoW.Within(ctx, scope, func(tx Session) error {
 		w := s.newWork(tx, scope, a.DisplayName)
-		if e := w.Load(active); e != nil {
+		if e := w.Load(active, scoring); e != nil {
 			return e
 		}
 		var e error
@@ -112,7 +116,7 @@ func (s Service) Preview(ctx context.Context, c PreviewCommand) (any, error) {
 	return s.mutate(ctx, c.Actor, true, preview)
 }
 func (s Service) ConfirmPreview(ctx context.Context, c PreviewCommand) (any, error) {
-	return s.mutate(ctx, c.Actor, true, confirmPreview)
+	return s.mutateWithRanking(ctx, c.Actor, true, true, confirmPreview)
 }
 func (s Service) AbandonPreview(ctx context.Context, c PreviewCommand) (any, error) {
 	return s.mutate(ctx, c.Actor, true, abandonPreview)
@@ -172,7 +176,7 @@ func (s Service) Draw(ctx context.Context, c DrawCommand) (any, error) {
 		if e != nil || found {
 			return e
 		}
-		if e = w.Load(true); e != nil {
+		if e = w.Load(true, true); e != nil {
 			return e
 		}
 		out, e = draw(w, cmd, nil, 0)

@@ -16,7 +16,7 @@ import (
 )
 
 type liveEdition struct {
-	// The single active ranking instance serializes writes and rebuilds per edition.
+	// The live leaderboard's active instance serializes writes and rebuilds per edition.
 	writer     chan struct{}
 	generation atomic.Pointer[cache.Generation]
 	retired    bool      // protected by writer
@@ -90,8 +90,6 @@ func (r *Repository) Consume(ctx context.Context, ev platform.Event) error {
 	if err := s.lock(ctx); err != nil {
 		return err
 	}
-	defer s.unlock()
-
 	g := s.generation.Load()
 	if g != nil {
 		op, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
@@ -107,7 +105,17 @@ func (r *Repository) Consume(ctx context.Context, ev platform.Event) error {
 	if g != nil && errors.As(err, &fault) && fault.Status == 409 {
 		s.generation.CompareAndSwap(g, nil)
 	}
-	return err
+	s.unlock()
+	if err != nil || f.Hourly == nil || r.ProjectHourly == nil {
+		return err
+	}
+	op, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancel()
+	if e := r.ProjectHourly(op, f); e != nil && ctx.Err() == nil {
+		// The source outbox remains replayable after ACK.
+		slog.Debug("hourly ranking projection deferred", "edition_id", f.Edition, "cutoff_sec", f.Hourly.Cutoff, "error", e)
+	}
+	return nil
 }
 
 // MaintainCache is independent of queue ACKs and retries unavailable editions.

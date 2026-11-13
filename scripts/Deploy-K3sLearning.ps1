@@ -67,8 +67,10 @@ $migrationFiles = [ordered]@{
     '021_records.sql'='services/activity-service/migrations/002_records.sql'
     '022_projection.sql'='services/activity-service/migrations/003_ranking_projection.sql'
     '023_settlement.sql'='services/activity-service/migrations/004_settlement_scheduling.sql'
+    '024_hourly_ranking.sql'='services/activity-service/migrations/005_hourly_ranking.sql'
     '030_ranking.sql'='services/ranking-service/migrations/001_initial.sql'
     '031_settlement.sql'='services/ranking-service/migrations/002_settlement_resume.sql'
+    '032_hourly_ranking.sql'='services/ranking-service/migrations/003_hourly_ranking.sql'
 }
 $migrationData = @{}
 foreach ($entry in $migrationFiles.GetEnumerator()) { $migrationData[$entry.Key] = Get-Content $entry.Value -Raw }

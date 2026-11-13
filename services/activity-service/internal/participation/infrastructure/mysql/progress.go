@@ -4,7 +4,7 @@ import domain "activity/services/activity-service/internal/participation/domain"
 
 func (s *Repository) Gate() (domain.Edition, error) {
 	var e domain.Edition
-	err := s.Tx.QueryRow(s.Ctx, `SELECT status,starts_at,ends_at,active_rule_version,UTC_TIMESTAMP(6) FROM activity_edition WHERE edition_id=? FOR SHARE`, s.Edition).Scan(&e.Status, &e.Start, &e.End, &e.RuleVersion, &e.Now)
+	err := s.Tx.QueryRow(s.Ctx, `SELECT status,starts_at,ends_at,active_rule_version,UTC_TIMESTAMP(6),hourly_ranking_enabled FROM activity_edition WHERE edition_id=? FOR SHARE`, s.Edition).Scan(&e.Status, &e.Start, &e.End, &e.RuleVersion, &e.Now, &e.HourlyRanking)
 	return e, err
 }
 func (s *Repository) Exists() (bool, error) {

@@ -10,6 +10,7 @@ type Edition struct {
 	Status          string
 	Start, End, Now time.Time
 	RuleVersion     int
+	HourlyRanking   bool
 }
 
 func (e Edition) CheckActive() error {

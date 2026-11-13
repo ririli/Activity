@@ -5,8 +5,8 @@
 ## 消费与查询
 
 - 活动服务在正式抽奖事务内保存事实和 Outbox。榜单服务通过已有队列消费，正常情况下先更新 Redis，再提交榜单 MySQL。MySQL 提交后确认消息。
-- Redis 每期使用 ZSET 排名、Hash 保存原始积分和达分秒、Set 保存已处理的 drawID。Lua 合并积分时取最大业务秒。重复 drawID 跳过缓存更新，仍尝试提交 MySQL。MySQL 用 `score_fact.draw_id` 主键去重，并检查用户、期次、抽奖序号、实际消耗和业务秒。MySQL 连续推进抽奖序号，Redis 可先显示已到事件的合计。
-- 实时榜用一个 Lua 脚本读 Top 20、本人积分和名次。期次缓存异常时整份查询回退 MySQL，单实例最多允许 8 个并发降级查询，查询超时为 2 秒。最终榜读取 MySQL 的 `ranking_snapshot`。
+- Redis 每期按 `user_id % 4` 划分实时榜。每片使用 ZSET 排名、Hash 保存积分和达分秒、Set 保存已处理的 drawID。Lua 合并积分时取最大业务秒。重复 drawID 跳过缓存更新，仍尝试提交 MySQL。MySQL 用 `score_fact.draw_id` 主键去重并验证事实，按连续抽奖序号推进。Redis 可先显示已到事件的合计。
+- 实时榜从四片归并 Top 20，并用所在片的排名与其他三片排在该用户前的人数计算本人名次。期次缓存异常时整份查询回退 MySQL，单实例最多允许 8 个并发降级查询，查询超时为 2 秒。活动结束榜读取 MySQL 的 `ranking_snapshot`。整点用独立 Redis 窗口，见 [整点榜单结算](整点榜单结算.md)。
 
 ## 故障与重建
 
@@ -17,7 +17,7 @@
 
 ## 集成测试
 
-设置 `RANKING_TEST_REDIS_ADDR` 和 `RANKING_TEST_MYSQL_DSN` 指向隔离的测试实例。空库设置 `RANKING_TEST_ALLOW_SCHEMA=1`，由测试应用榜单迁移。已准备好两份榜单迁移的测试库使用 `RANKING_TEST_PREPARED_SCHEMA=1`。
+设置 `RANKING_TEST_REDIS_ADDR` 和 `RANKING_TEST_MYSQL_DSN` 指向隔离的测试实例。空库设置 `RANKING_TEST_ALLOW_SCHEMA=1`，由现有实时榜测试应用基础榜单迁移。测试整点结算时预先应用三份榜单迁移并设置 `RANKING_TEST_PREPARED_SCHEMA=1`。
 
 ```powershell
 & 'D:\Program Files\GO\go1.25.1\bin\go.exe' test -count=1 -v ./services/ranking-service/...

@@ -7,7 +7,9 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 
+	"activity/pkg/hourly"
 	"activity/pkg/platform"
 	"activity/services/ranking-service/internal/ranking/domain"
 	rdb "github.com/redis/go-redis/v9"
@@ -32,13 +34,14 @@ type Bounds struct {
 }
 type Cache struct {
 	Client     *rdb.Client
+	Clients    [hourly.Shards]*rdb.Client
 	LoadBounds func(context.Context, string) (Bounds, error)
 }
 
 // Generation is published by the repository only after the full rebuild.
 type Generation struct {
-	id   string
-	keys []string
+	id     string
+	shards [][]string
 }
 
 func prefix(edition string) string {
@@ -54,6 +57,20 @@ func generationKeys(p string) []string {
 	return []string{p + "meta", p + "board", p + "users", p + "draws"}
 }
 
+func (c *Cache) clients() []*rdb.Client {
+	if c.Clients[0] != nil {
+		return c.Clients[:]
+	}
+	return []*rdb.Client{c.Client}
+}
+
+func livePrefix(edition string, shard, count int) string {
+	if count == 1 {
+		return prefix(edition)
+	}
+	return prefix(edition + ":" + strconv.Itoa(shard))
+}
+
 func (c *Cache) Start(ctx context.Context, edition string) (*Generation, error) {
 	b, err := c.LoadBounds(ctx, edition)
 	if err != nil {
@@ -62,9 +79,28 @@ func (c *Cache) Start(ctx context.Context, edition string) (*Generation, error) 
 	if b.Min < 0 || b.End < b.Min || b.End > 1<<53-1 {
 		return nil, ErrUnavailable
 	}
-	info, err := c.Client.Info(ctx, "server").Result()
+	clients := c.clients()
+	if len(clients) > 1 && c.Client != nil {
+		p := prefix(edition)
+		// Old-format keys are unused by the new generation.
+		_ = c.Client.Unlink(ctx, append(legacyKeys(p), generationKeys(p)...)...).Err()
+	}
+	g := &Generation{id: platform.Random(), shards: make([][]string, len(clients))}
+	for shard, client := range clients {
+		p := livePrefix(edition, shard, len(clients))
+		keys := generationKeys(p)
+		if err := startShard(ctx, client, p, keys, g.id, b); err != nil {
+			return nil, err
+		}
+		g.shards[shard] = keys
+	}
+	return g, nil
+}
+
+func startShard(ctx context.Context, client *rdb.Client, p string, keys []string, generation string, b Bounds) error {
+	info, err := client.Info(ctx, "server").Result()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	var run string
 	for _, line := range strings.Split(info, "\r\n") {
@@ -74,29 +110,33 @@ func (c *Cache) Start(ctx context.Context, edition string) (*Generation, error) 
 		}
 	}
 	if run == "" {
-		return nil, ErrUnavailable
+		return ErrUnavailable
 	}
-	p := prefix(edition)
-	g := &Generation{id: platform.Random(), keys: generationKeys(p)}
 	// Reuse the physical keys only after the old generation is unpublished.
 	// The generation token prevents in-flight reads from seeing partial data.
-	_, err = c.Client.TxPipelined(ctx, func(pipe rdb.Pipeliner) error {
-		pipe.Unlink(ctx, append(legacyKeys(p), g.keys...)...)
-		pipe.HSet(ctx, g.keys[0], "generation", g.id, "run_id", run, "min", b.Min, "end", b.End, "users", 0, "draws", 0)
+	_, err = client.TxPipelined(ctx, func(pipe rdb.Pipeliner) error {
+		pipe.Unlink(ctx, append(legacyKeys(p), keys...)...)
+		pipe.HSet(ctx, keys[0], "generation", generation, "run_id", run, "min", b.Min, "end", b.End, "users", 0, "draws", 0)
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if err := update.Load(ctx, c.Client).Err(); err != nil {
-		return nil, err
-	}
-	return g, nil
+	return update.Load(ctx, client).Err()
 }
 
 func (c *Cache) Retire(ctx context.Context, edition string) error {
-	p := prefix(edition)
-	return c.Client.Unlink(ctx, append(legacyKeys(p), generationKeys(p)...)...).Err()
+	clients := c.clients()
+	var failure error
+	for shard, client := range clients {
+		p := livePrefix(edition, shard, len(clients))
+		failure = errors.Join(failure, client.Unlink(ctx, append(legacyKeys(p), generationKeys(p)...)...).Err())
+	}
+	if len(clients) > 1 && c.Client != nil {
+		p := prefix(edition)
+		failure = errors.Join(failure, c.Client.Unlink(ctx, append(legacyKeys(p), generationKeys(p)...)...).Err())
+	}
+	return failure
 }
 
 func updateArgs(g *Generation, f domain.Fact) ([]any, error) {
@@ -116,7 +156,9 @@ func (c *Cache) Apply(ctx context.Context, g *Generation, f domain.Fact) error {
 	if err != nil {
 		return err
 	}
-	n, err := update.Run(ctx, c.Client, g.keys, args...).Int()
+	user, _ := platform.UID(f.User)
+	shard := int(user % uint64(len(g.shards)))
+	n, err := update.Run(ctx, c.clients()[shard], g.shards[shard], args...).Int()
 	if err == nil && n < 0 {
 		return ErrUnavailable
 	}
@@ -124,14 +166,34 @@ func (c *Cache) Apply(ctx context.Context, g *Generation, f domain.Fact) error {
 }
 
 func (c *Cache) ApplyBatch(ctx context.Context, g *Generation, facts []domain.Fact) error {
+	byShard := make([][]domain.Fact, len(g.shards))
+	for _, f := range facts {
+		user, err := platform.UID(f.User)
+		if err != nil {
+			return err
+		}
+		shard := int(user % uint64(len(g.shards)))
+		byShard[shard] = append(byShard[shard], f)
+	}
+	for shard, batch := range byShard {
+		if len(batch) > 0 {
+			if err := applyBatch(ctx, c.clients()[shard], g, shard, batch); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func applyBatch(ctx context.Context, client *rdb.Client, g *Generation, shard int, facts []domain.Fact) error {
 	commands := make([]*rdb.Cmd, 0, len(facts))
-	_, err := c.Client.Pipelined(ctx, func(pipe rdb.Pipeliner) error {
+	_, err := client.Pipelined(ctx, func(pipe rdb.Pipeliner) error {
 		for _, f := range facts {
 			args, err := updateArgs(g, f)
 			if err != nil {
 				return err
 			}
-			commands = append(commands, update.EvalSha(ctx, pipe, g.keys, args...))
+			commands = append(commands, update.EvalSha(ctx, pipe, g.shards[shard], args...))
 		}
 		return nil
 	})
@@ -155,14 +217,17 @@ func (c *Cache) Board(ctx context.Context, g *Generation, user string) (domain.B
 	if err != nil {
 		return domain.Board{}, err
 	}
-	result, err := read.Run(ctx, c.Client, g.keys, g.id, domain.Member(u)).StringSlice()
+	clients := c.clients()
+	member := domain.Member(u)
+	home := int(u % uint64(len(clients)))
+	result, err := read.Run(ctx, clients[home], g.shards[home], g.id, member).StringSlice()
 	if err != nil {
 		return domain.Board{}, err
 	}
-	if len(result) < 2 {
+	if len(result) < 3 {
 		return domain.Board{}, ErrUnavailable
 	}
-	b := domain.Board{Top: make([]domain.Entry, 0, len(result)-2), Source: "redis"}
+	b := domain.Board{Source: "redis"}
 	if result[0] != "" {
 		v, err := decodeEntry(result[0])
 		if err != nil {
@@ -174,15 +239,60 @@ func (c *Cache) Board(ctx context.Context, g *Generation, user string) (domain.B
 		}
 		b.Me = &v
 	}
-	for i, raw := range result[2:] {
+	entries, err := decodeEntries(result[3:])
+	if err != nil {
+		return b, err
+	}
+	type shardResult struct {
+		count   int64
+		entries []domain.Entry
+		err     error
+	}
+	others := make([]shardResult, len(clients))
+	var reads sync.WaitGroup
+	for shard, client := range clients {
+		if shard == home {
+			continue
+		}
+		reads.Go(func() {
+			out := &others[shard]
+			values, err := read.Run(ctx, client, g.shards[shard], g.id, member, result[2]).StringSlice()
+			if err == nil && len(values) < 3 {
+				err = ErrUnavailable
+			}
+			if err == nil {
+				out.count, err = strconv.ParseInt(values[1], 10, 64)
+			}
+			if err == nil {
+				out.entries, err = decodeEntries(values[3:])
+			}
+			out.err = err
+		})
+	}
+	reads.Wait()
+	for _, out := range others {
+		if out.err != nil {
+			return b, out.err
+		}
+		if b.Me != nil {
+			b.Me.Rank += out.count
+		}
+		entries = append(entries, out.entries...)
+	}
+	b.Top = domain.Top(entries, 20)
+	return b, nil
+}
+
+func decodeEntries(rawEntries []string) ([]domain.Entry, error) {
+	entries := make([]domain.Entry, 0, len(rawEntries))
+	for _, raw := range rawEntries {
 		v, err := decodeEntry(raw)
 		if err != nil {
-			return b, err
+			return nil, err
 		}
-		v.Rank = int64(i + 1)
-		b.Top = append(b.Top, v)
+		entries = append(entries, v)
 	}
-	return b, nil
+	return entries, nil
 }
 
 func decodeEntry(raw string) (domain.Entry, error) {

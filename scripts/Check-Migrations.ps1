@@ -8,9 +8,11 @@ $files = @(
     'services/identity-service/migrations/001_initial.sql',
     'services/activity-service/migrations/001_initial.sql',
     'services/activity-service/migrations/002_records.sql',
-    'services/ranking-service/migrations/001_initial.sql'
+    'services/activity-service/migrations/005_hourly_ranking.sql',
+    'services/ranking-service/migrations/001_initial.sql',
+    'services/ranking-service/migrations/003_hourly_ranking.sql'
 )
-$counts = @{ activity_identity = 3; activity_core = 32; activity_ranking = 7 }
+$counts = @{ activity_identity = 3; activity_core = 35; activity_ranking = 9 }
 $tables = @{}
 foreach ($relativePath in $files) {
     $sql = [IO.File]::ReadAllText((Join-Path $projectRoot $relativePath))
@@ -19,7 +21,7 @@ foreach ($relativePath in $files) {
     if (-not $counts.ContainsKey($schema)) { throw "Unknown schema: $relativePath" }
     # Ignore strings and comments before checking balanced delimiters and unsafe DDL.
     $clean = [regex]::Replace($sql, "'(?:''|[^'])*'|--[^\r\n]*", ' ')
-    if ($clean -match '(?i)\b(DROP|TRUNCATE)\b') { throw "Destructive statement: $relativePath" }
+    if ($clean -match '(?i)\b(DROP(?!\s+CHECK\b)|TRUNCATE)\b') { throw "Destructive statement: $relativePath" }
     $balance = 0
     foreach ($char in $clean.ToCharArray()) {
         if ($char -eq '(') { $balance++ }

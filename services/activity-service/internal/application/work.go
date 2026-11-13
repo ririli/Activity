@@ -39,7 +39,7 @@ func encode(v any) []byte {
 	}
 	return raw
 }
-func (s *work) Load(active bool) error {
+func (s *work) Load(active, scoring bool) error {
 	gate, err := s.session.Participation.Gate()
 	if err != nil {
 		return err
@@ -61,6 +61,16 @@ func (s *work) Load(active bool) error {
 	exists, err := s.session.Participation.Exists()
 	if err != nil {
 		return err
+	}
+	if active && gate.HourlyRanking && (!exists || scoring) {
+		s.now, err = s.session.AdmitHourly(gate.End)
+		if err != nil {
+			return err
+		}
+		gate.Now = s.now
+		if err := gate.CheckActive(); err != nil {
+			return err
+		}
 	}
 	if !exists {
 		if !active {

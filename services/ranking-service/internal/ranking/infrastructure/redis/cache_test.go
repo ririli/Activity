@@ -72,15 +72,16 @@ func TestAtomicRanking(t *testing.T) {
 		b.Top[1].User != "9007199254740992" || b.Top[3].Score != 0 || b.Top[3].Reached != 140 {
 		t.Fatalf("unexpected ranking: %+v / %v", b, err)
 	}
-	if client.SCard(ctx, g.keys[3]).Val() != 4 {
+	keys := g.shards[0]
+	if client.SCard(ctx, keys[3]).Val() != 4 {
 		t.Fatal("draw Set should contain exactly four accepted draws")
 	}
 	for _, invalid := range []domain.Fact{draw("7", "5", 1<<53-1, 200), draw("7", "6", 1, 99)} {
-		if err := cache.Apply(ctx, g, invalid); err == nil || client.SIsMember(ctx, g.keys[3], invalid.Draw).Val() {
+		if err := cache.Apply(ctx, g, invalid); err == nil || client.SIsMember(ctx, keys[3], invalid.Draw).Val() {
 			t.Fatalf("invalid fact touched the Set: %+v / %v", invalid, err)
 		}
 	}
-	if err := client.HSet(ctx, g.keys[0], "run_id", "old-run").Err(); err != nil {
+	if err := client.HSet(ctx, keys[0], "run_id", "old-run").Err(); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := cache.Board(ctx, g, user); err == nil {
