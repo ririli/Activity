@@ -1,6 +1,6 @@
 # 榜单 Redis 先写与故障恢复
 
-本页记录当前实现。早期 [ranking-service 设计方案](ranking-service设计方案.md) 中的同步刷榜、Redis Hash 抽奖指纹及缓存写入入口已由本方案替代。数据库结构沿用现有迁移。
+本页说明榜单服务的消息消费、Redis 查询与缓存恢复。实现入口为 [缓存维护与消费](../services/ranking-service/internal/ranking/infrastructure/mysql/cache.go)。
 
 ## 消费与查询
 
