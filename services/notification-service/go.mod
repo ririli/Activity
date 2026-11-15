@@ -5,7 +5,7 @@ go 1.25.1
 require (
 	activity v0.0.0
 	github.com/gin-gonic/gin v1.11.0
-	github.com/redis/go-redis/v9 v9.17.0
+	github.com/redis/go-redis/v9 v9.17.3
 )
 
 require (

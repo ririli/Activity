@@ -6,6 +6,8 @@ resources:
   - "config.yaml"
   - "mysql.yaml"
   - "redis.yaml"
+  - "ranking-redis.yaml"
+  - "ranking-redis-network.yaml"
   - "rabbitmq.yaml"
   - "identity.yaml"
   - "activity.yaml"
@@ -15,6 +17,10 @@ resources:
   - "network-policies.yaml"
   - "rbac.yaml"
 configMapGenerator:
+  -
+    name: "ranking-redis-bootstrap"
+    files:
+      - "ranking-redis-entrypoint.sh"
   -
     name: "web-nginx"
     files:

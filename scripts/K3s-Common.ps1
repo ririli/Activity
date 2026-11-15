@@ -19,3 +19,38 @@ function Apply-Secret([string]$Name, [hashtable]$Values) {
 }
 function Random-Hex { [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLowerInvariant() }
 function Native-Check([string]$What) { if ($LASTEXITCODE -ne 0) { throw "$What failed, exit $LASTEXITCODE" } }
+
+function Wait-RankingRedisTopology {
+    $deadline = [DateTime]::UtcNow.AddSeconds(75)
+    do {
+        $healthy = $true
+        try {
+            $primaries = @{}
+            foreach ($index in 0..2) {
+                foreach ($shard in 0..3) {
+                    $group = "ranking-shard-$shard"
+                    $check = K -n activity exec "ranking-sentinel-$index" '--' redis-cli -p 26379 --raw SENTINEL CKQUORUM $group
+                    if ($check -notmatch '^OK 3 usable Sentinels') { throw "$group has not discovered all three Sentinels" }
+                    $primary = @(K -n activity exec "ranking-sentinel-$index" '--' redis-cli -p 26379 --raw SENTINEL GET-MASTER-ADDR-BY-NAME $group)[0]
+                    if ($primary -notmatch "^ranking-redis-$shard-[01]\.") { throw "$group reported unexpected primary $primary" }
+                    if ($index -eq 0) {
+                        $pod = $primary.Split('.')[0]
+                        $info = K -n activity exec $pod '--' redis-cli --raw INFO replication
+                        if ('role:master' -notin $info -or -not ($info -match '^slave0:.*state=online,')) {
+                            throw "$group is waiting for its replica"
+                        }
+                        $primaries[$group] = $primary
+                    } elseif ($primaries[$group] -ne $primary) {
+                        throw "Sentinels disagree about the primary of $group"
+                    }
+                }
+            }
+        } catch {
+            $healthy = $false
+            $last = $_.Exception.Message
+        }
+        if ($healthy) { Write-Output 'Four ranking Redis primary/replica groups and three Sentinels are ready'; return }
+        Start-Sleep -Seconds 2
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "Ranking Redis topology not ready: $last"
+}

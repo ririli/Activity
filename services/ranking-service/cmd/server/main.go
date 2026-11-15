@@ -11,14 +11,10 @@ import (
 	cache "activity/services/ranking-service/internal/ranking/infrastructure/redis"
 	httpapi "activity/services/ranking-service/internal/ranking/interfaces/http"
 	"context"
-	"fmt"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
-
-	rdb "github.com/redis/go-redis/v9"
 )
 
 func durationEnv(key string, fallback time.Duration) time.Duration {
@@ -64,7 +60,10 @@ func main() {
 		}
 		return b, e
 	}
-	projection := &cache.Cache{Client: r, Clients: clients, LoadBounds: loadBounds}
+	projection := &cache.Cache{Clients: clients, LoadBounds: loadBounds}
+	if os.Getenv("RANKING_REDIS_SENTINEL_ADDRS") == "" {
+		projection.Client = r
+	}
 	hourlyCache := &cache.HourlyCache{Clients: clients, LoadBounds: loadBounds, Namespace: platform.Env("APP_ENV", "local")}
 	hourlyWorker := application.HourlyWorker{Store: store.HourlyStore{DB: db}, Activity: activityhttp.Client{URL: activityURL}, Projection: hourlyCache, Wake: make(chan struct{}, 1)}
 	repo := &store.Repository{DB: db, Cache: projection, ProjectHourly: hourlyWorker.Project}
@@ -105,31 +104,4 @@ func main() {
 			return repo.Consume(ctx, ev)
 		})
 	})
-}
-
-func rankingRedisClients(fallback *rdb.Client) ([hourly.Shards]*rdb.Client, error) {
-	var clients [hourly.Shards]*rdb.Client
-	raw := os.Getenv("RANKING_REDIS_SHARD_ADDRS")
-	if raw == "" {
-		for i := range clients {
-			clients[i] = fallback
-		}
-		return clients, nil
-	}
-	addresses := strings.Split(raw, ",")
-	if len(addresses) != hourly.Shards {
-		return clients, fmt.Errorf("RANKING_REDIS_SHARD_ADDRS requires %d addresses", hourly.Shards)
-	}
-	for i, address := range addresses {
-		addresses[i] = strings.TrimSpace(address)
-		if addresses[i] == "" {
-			return clients, fmt.Errorf("empty Redis shard address at position %d", i)
-		}
-	}
-	for i, address := range addresses {
-		options := *fallback.Options()
-		options.Addr = address
-		clients[i] = rdb.NewClient(&options)
-	}
-	return clients, nil
 }

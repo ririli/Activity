@@ -98,7 +98,7 @@ func (c *Cache) Start(ctx context.Context, edition string) (*Generation, error) 
 }
 
 func startShard(ctx context.Context, client *rdb.Client, p string, keys []string, generation string, b Bounds) error {
-	info, err := client.Info(ctx, "server").Result()
+	info, err := client.Info(ctx, "server", "replication").Result()
 	if err != nil {
 		return err
 	}
@@ -109,7 +109,7 @@ func startShard(ctx context.Context, client *rdb.Client, p string, keys []string
 			break
 		}
 	}
-	if run == "" {
+	if run == "" || !strings.Contains(info, "\nrole:master\r\n") {
 		return ErrUnavailable
 	}
 	// Reuse the physical keys only after the old generation is unpublished.

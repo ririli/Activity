@@ -1,0 +1,1 @@
+deploy/k8s/ranking-redis-entrypoint.sh text eol=lf

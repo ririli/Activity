@@ -19,6 +19,16 @@ if (-not (Test-Path $secretPath)) {
     Native-Check 'credentials ACL'
 }
 $secrets = Get-Content $secretPath -Raw | ConvertFrom-Json -AsHashtable
+$addedRankingSecrets = $false
+foreach ($key in @('rankingRedis','rankingSentinel')) {
+    if (-not $secrets.ContainsKey($key)) {
+        $secrets[$key] = Random-Hex
+        $addedRankingSecrets = $true
+    }
+}
+if ($addedRankingSecrets) {
+    $secrets | ConvertTo-Json | Set-Content -Encoding utf8 $secretPath
+}
 $keyDir = Join-Path $State 'keys'
 & $Go run ./scripts/k8skeys $keyDir
 Native-Check 'JWT key initialization'
@@ -41,6 +51,8 @@ if (-not (Test-Path $certPath)) {
 K apply -f deploy/k8s/namespace.yaml
 Apply-Secret mysql-root @{password=$secrets.mysqlRoot}
 Apply-Secret redis-auth @{password=$secrets.redis}
+Apply-Secret ranking-redis-auth @{password=$secrets.rankingRedis}
+Apply-Secret ranking-sentinel-auth @{password=$secrets.rankingSentinel}
 Apply-Secret rabbitmq-auth @{password=$secrets.rabbitmq; cookie=$secrets.erlang}
 Apply-Secret rabbitmq-connection @{AMQP_URL="amqp://activity:$($secrets.rabbitmq)@rabbitmq:5672/"}
 Apply-Secret internal-auth @{INTERNAL_TOKEN=$secrets.internal}
@@ -123,6 +135,10 @@ foreach ($name in @('identity','activity','ranking','notification','web')) { $ku
 Set-Content -Encoding utf8 "$overlay/kustomization.yaml" $kustomization
 K apply -k $overlay
 foreach ($name in @('mysql','redis','rabbitmq')) { K -n activity rollout status "statefulset/$name" --timeout=300s }
+foreach ($name in @('ranking-redis-0','ranking-redis-1','ranking-redis-2','ranking-redis-3','ranking-sentinel')) {
+    K -n activity rollout status "statefulset/$name" --timeout=300s
+}
+Wait-RankingRedisTopology
 $existingSchema = & kubectl --kubeconfig $Kubeconfig -n activity get job activity-schema-v1 --ignore-not-found -o json
 if (-not $existingSchema) { K apply -f deploy/k8s/schema-job.yaml }
 elseif (($existingSchema | ConvertFrom-Json).status.succeeded -ne 1) { throw 'Existing schema Job did not complete; inspect its logs and database state before retrying.' }

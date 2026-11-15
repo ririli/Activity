@@ -50,6 +50,13 @@ spec:
               configMapRef:
                 name: "app-config"
           env:
+            - name: RANKING_REDIS_SENTINEL_ADDRS
+              value: >-
+                ranking-sentinel-0.ranking-sentinel.activity.svc.cluster.local:26379,ranking-sentinel-1.ranking-sentinel.activity.svc.cluster.local:26379,ranking-sentinel-2.ranking-sentinel.activity.svc.cluster.local:26379
+            - name: RANKING_REDIS_PASSWORD
+              valueFrom: {secretKeyRef: {name: ranking-redis-auth, key: password}}
+            - name: RANKING_REDIS_SENTINEL_PASSWORD
+              valueFrom: {secretKeyRef: {name: ranking-sentinel-auth, key: password}}
             -
               name: "NODE_ID"
               value: "3"

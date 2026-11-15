@@ -107,7 +107,7 @@ func (s *Service) Register(ctx context.Context, c Credentials, ip string) (Token
 	if nick == "" {
 		nick = c.Account
 	}
-	a := domain.Account{UserID: platform.ID(), Name: c.Account, Nickname: nick, PasswordHash: hash, Status: "ACTIVE"}
+	a := domain.Account{UserID: platform.UserID(), Name: c.Account, Nickname: nick, PasswordHash: hash, Status: "ACTIVE"}
 	sid := platform.Random()
 	expiry := time.Now().UTC().Add(7 * 24 * time.Hour)
 	tokens, e := s.issue(a, sid, expiry)

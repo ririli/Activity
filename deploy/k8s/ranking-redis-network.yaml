@@ -1,0 +1,134 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ranking-redis-client
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: ranking}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {activity-role: ranking-data}
+      ports: [{protocol: TCP, port: 6379}]
+    - to:
+        - podSelector:
+            matchLabels: {activity-role: ranking-sentinel}
+      ports: [{protocol: TCP, port: 26379}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ranking-redis-data
+spec:
+  podSelector:
+    matchLabels: {activity-role: ranking-data}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ranking}
+        - podSelector:
+            matchLabels: {activity-role: ranking-sentinel}
+      ports: [{protocol: TCP, port: 6379}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ranking-redis-sentinel
+spec:
+  podSelector:
+    matchLabels: {activity-role: ranking-sentinel}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ranking}
+        - podSelector:
+            matchLabels: {activity-role: ranking-sentinel}
+      ports: [{protocol: TCP, port: 26379}]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {activity-role: ranking-sentinel}
+      ports: [{protocol: TCP, port: 26379}]
+    - to:
+        - podSelector:
+            matchLabels: {activity-role: ranking-data}
+      ports: [{protocol: TCP, port: 6379}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ranking-redis-replication-0
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: ranking-redis-0}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ranking-redis-0}
+      ports: [{protocol: TCP, port: 6379}]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ranking-redis-0}
+      ports: [{protocol: TCP, port: 6379}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ranking-redis-replication-1
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: ranking-redis-1}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ranking-redis-1}
+      ports: [{protocol: TCP, port: 6379}]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ranking-redis-1}
+      ports: [{protocol: TCP, port: 6379}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ranking-redis-replication-2
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: ranking-redis-2}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ranking-redis-2}
+      ports: [{protocol: TCP, port: 6379}]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ranking-redis-2}
+      ports: [{protocol: TCP, port: 6379}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ranking-redis-replication-3
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: ranking-redis-3}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ranking-redis-3}
+      ports: [{protocol: TCP, port: 6379}]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: ranking-redis-3}
+      ports: [{protocol: TCP, port: 6379}]

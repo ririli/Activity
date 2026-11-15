@@ -186,6 +186,7 @@ func (r *Repository) rebuild(ctx context.Context, edition string, s *liveEdition
 	if s.generation.Load() != nil || s.retired {
 		return nil
 	}
+	started := time.Now()
 	tx, err := r.DB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
 		return err
@@ -247,6 +248,7 @@ func (r *Repository) rebuild(ctx context.Context, edition string, s *liveEdition
 		return err
 	}
 	s.generation.Store(g)
+	slog.Info("ranking cache rebuilt", "edition_id", edition, "elapsed", time.Since(started))
 	return nil
 }
 

@@ -1,6 +1,9 @@
 -- KEYS: window metadata, window ZSET. ARGV: operation, lane count, arguments.
 local op, lanes = ARGV[1], tonumber(ARGV[2])
 local meta, board = KEYS[1], KEYS[2]
+if not string.find(redis.call('INFO', 'replication'), '\nrole:master\r\n', 1, true) then
+  return redis.error_reply('ERR ranking Redis is not primary')
+end
 local run = string.match(redis.call('INFO', 'server'), 'run_id:(%w+)')
 local state = redis.call('HMGET', meta, 'run_id', 'users', 'state')
 if state[3] == 'retired' then return {'retired'} end

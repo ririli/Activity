@@ -226,30 +226,48 @@ func MustRandom(b []byte) {
 }
 
 var idMu sync.Mutex
-var lastMS int64
-var seq int64
+var ids idSequence
 
-func ID() uint64 {
+type idSequence struct {
+	lastMS   int64
+	next     int64
+	userSlot int64
+}
+
+func ID() uint64 { return allocateID(false) }
+
+// UserID distributes new accounts across the four user_id % 4 shards.
+func UserID() uint64 { return allocateID(true) }
+
+func allocateID(user bool) uint64 {
 	idMu.Lock()
 	defer idMu.Unlock()
-	n := time.Now().UnixMilli() - 1767225600000
-	if n < lastMS {
-		panic("clock moved backwards")
-	}
-	if n == lastMS {
-		seq++
-		if seq >= 4096 {
-			panic("ID rate exhausted")
-		}
-	} else {
-		seq = 0
-	}
-	lastMS = n
 	node, err := strconv.ParseInt(Env("NODE_ID", "1"), 10, 10)
 	if err != nil || node < 0 || node > 1023 {
 		panic("invalid NODE_ID")
 	}
-	return uint64(n<<22 | node<<12 | seq)
+	return ids.allocate(time.Now().UnixMilli()-1767225600000, node, user)
+}
+
+func (s *idSequence) allocate(ms, node int64, user bool) uint64 {
+	if ms < s.lastMS {
+		panic("clock moved backwards")
+	}
+	if ms != s.lastMS {
+		s.lastMS, s.next = ms, 0
+	}
+	seq := s.next
+	if user {
+		seq += (s.userSlot - seq) & 3
+	}
+	if seq >= 4096 {
+		panic("ID rate exhausted")
+	}
+	s.next = seq + 1
+	if user {
+		s.userSlot = (s.userSlot + 1) % 4
+	}
+	return uint64(ms<<22 | node<<12 | seq)
 }
 func Run(g *gin.Engine, worker func(context.Context)) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

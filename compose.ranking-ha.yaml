@@ -1,0 +1,161 @@
+x-ranking-node: &ranking-node
+  image: redis:7.4-alpine
+  user: "999:1000"
+  restart: unless-stopped
+  read_only: true
+  networks: [ranking-ha]
+  environment: &ranking-auth
+    RANKING_REDIS_PASSWORD: ${RANKING_REDIS_PASSWORD:?Set RANKING_REDIS_PASSWORD}
+  healthcheck:
+    test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$RANKING_REDIS_PASSWORD\" redis-cli -e ping"]
+    interval: 2s
+    timeout: 2s
+    retries: 30
+  mem_limit: 256m
+  entrypoint: ["/bin/sh", "/bootstrap.sh", "data"]
+
+x-sentinel: &sentinel
+  <<: *ranking-node
+  environment: &sentinel-auth
+    <<: *ranking-auth
+    RANKING_REDIS_SENTINEL_PASSWORD: ${RANKING_REDIS_SENTINEL_PASSWORD:?Set RANKING_REDIS_SENTINEL_PASSWORD}
+    REDIS_INITIAL_PRIMARIES: ranking-redis-0-0 ranking-redis-1-0 ranking-redis-2-0 ranking-redis-3-0
+  healthcheck:
+    test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$RANKING_REDIS_SENTINEL_PASSWORD\" redis-cli -e -p 26379 ping"]
+    interval: 2s
+    timeout: 2s
+    retries: 30
+  mem_limit: 64m
+  entrypoint: ["/bin/sh", "/bootstrap.sh", "sentinel"]
+
+services:
+  ranking:
+    networks: [default, ingress, ranking-ha]
+    environment:
+      RANKING_REDIS_PASSWORD: ${RANKING_REDIS_PASSWORD:?Set RANKING_REDIS_PASSWORD}
+      RANKING_REDIS_SENTINEL_PASSWORD: ${RANKING_REDIS_SENTINEL_PASSWORD:?Set RANKING_REDIS_SENTINEL_PASSWORD}
+      RANKING_REDIS_SENTINEL_ADDRS: ranking-sentinel-0:26379,ranking-sentinel-1:26379,ranking-sentinel-2:26379
+
+  ranking-redis-0-0:
+    <<: *ranking-node
+    environment:
+      <<: *ranking-auth
+      REDIS_NODE_HOST: ranking-redis-0-0
+      REDIS_INITIAL_PRIMARY: ranking-redis-0-0
+    volumes:
+      - ranking-redis-0-0:/data
+      - ./deploy/k8s/ranking-redis-entrypoint.sh:/bootstrap.sh:ro
+
+  ranking-redis-0-1:
+    <<: *ranking-node
+    environment:
+      <<: *ranking-auth
+      REDIS_NODE_HOST: ranking-redis-0-1
+      REDIS_INITIAL_PRIMARY: ranking-redis-0-0
+    volumes:
+      - ranking-redis-0-1:/data
+      - ./deploy/k8s/ranking-redis-entrypoint.sh:/bootstrap.sh:ro
+
+  ranking-redis-1-0:
+    <<: *ranking-node
+    environment:
+      <<: *ranking-auth
+      REDIS_NODE_HOST: ranking-redis-1-0
+      REDIS_INITIAL_PRIMARY: ranking-redis-1-0
+    volumes:
+      - ranking-redis-1-0:/data
+      - ./deploy/k8s/ranking-redis-entrypoint.sh:/bootstrap.sh:ro
+
+  ranking-redis-1-1:
+    <<: *ranking-node
+    environment:
+      <<: *ranking-auth
+      REDIS_NODE_HOST: ranking-redis-1-1
+      REDIS_INITIAL_PRIMARY: ranking-redis-1-0
+    volumes:
+      - ranking-redis-1-1:/data
+      - ./deploy/k8s/ranking-redis-entrypoint.sh:/bootstrap.sh:ro
+
+  ranking-redis-2-0:
+    <<: *ranking-node
+    environment:
+      <<: *ranking-auth
+      REDIS_NODE_HOST: ranking-redis-2-0
+      REDIS_INITIAL_PRIMARY: ranking-redis-2-0
+    volumes:
+      - ranking-redis-2-0:/data
+      - ./deploy/k8s/ranking-redis-entrypoint.sh:/bootstrap.sh:ro
+
+  ranking-redis-2-1:
+    <<: *ranking-node
+    environment:
+      <<: *ranking-auth
+      REDIS_NODE_HOST: ranking-redis-2-1
+      REDIS_INITIAL_PRIMARY: ranking-redis-2-0
+    volumes:
+      - ranking-redis-2-1:/data
+      - ./deploy/k8s/ranking-redis-entrypoint.sh:/bootstrap.sh:ro
+
+  ranking-redis-3-0:
+    <<: *ranking-node
+    environment:
+      <<: *ranking-auth
+      REDIS_NODE_HOST: ranking-redis-3-0
+      REDIS_INITIAL_PRIMARY: ranking-redis-3-0
+    volumes:
+      - ranking-redis-3-0:/data
+      - ./deploy/k8s/ranking-redis-entrypoint.sh:/bootstrap.sh:ro
+
+  ranking-redis-3-1:
+    <<: *ranking-node
+    environment:
+      <<: *ranking-auth
+      REDIS_NODE_HOST: ranking-redis-3-1
+      REDIS_INITIAL_PRIMARY: ranking-redis-3-0
+    volumes:
+      - ranking-redis-3-1:/data
+      - ./deploy/k8s/ranking-redis-entrypoint.sh:/bootstrap.sh:ro
+
+  ranking-sentinel-0:
+    <<: *sentinel
+    environment:
+      <<: *sentinel-auth
+      REDIS_NODE_HOST: ranking-sentinel-0
+    volumes:
+      - ranking-sentinel-0:/data
+      - ./deploy/k8s/ranking-redis-entrypoint.sh:/bootstrap.sh:ro
+
+  ranking-sentinel-1:
+    <<: *sentinel
+    environment:
+      <<: *sentinel-auth
+      REDIS_NODE_HOST: ranking-sentinel-1
+    volumes:
+      - ranking-sentinel-1:/data
+      - ./deploy/k8s/ranking-redis-entrypoint.sh:/bootstrap.sh:ro
+
+  ranking-sentinel-2:
+    <<: *sentinel
+    environment:
+      <<: *sentinel-auth
+      REDIS_NODE_HOST: ranking-sentinel-2
+    volumes:
+      - ranking-sentinel-2:/data
+      - ./deploy/k8s/ranking-redis-entrypoint.sh:/bootstrap.sh:ro
+
+networks:
+  ranking-ha:
+    internal: true
+
+volumes:
+  ranking-redis-0-0:
+  ranking-redis-0-1:
+  ranking-redis-1-0:
+  ranking-redis-1-1:
+  ranking-redis-2-0:
+  ranking-redis-2-1:
+  ranking-redis-3-0:
+  ranking-redis-3-1:
+  ranking-sentinel-0:
+  ranking-sentinel-1:
+  ranking-sentinel-2:

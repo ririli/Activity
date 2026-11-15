@@ -15,6 +15,7 @@ Set-Location D:\gopath\src\Activity
 
 - `identity/activity/ranking/notification.yaml`：四个独立 Deployment 与 ClusterIP Service，每 Pod 一个业务容器。
 - `mysql/redis/rabbitmq.yaml`：三个单副本 StatefulSet、Service 与 PVC。
+- `ranking-redis.yaml`、`ranking-redis-network.yaml`：四组榜单 Redis 主从、三个共享 Sentinel、固定 Pod DNS、独立 PVC 和网络访问规则。
 - `web.yaml`：静态前端与已有 Nginx API 入口，Traefik Ingress 终止 TLS。
 - `config.yaml`、两个 `nginx*.conf`：公开运行配置；口令与私钥由脚本创建为 Secret。
 - `network-policies.yaml`：默认拒绝，单独放行 DNS、入口与有业务依据的服务调用。
@@ -35,6 +36,8 @@ Set-Location D:\gopath\src\Activity
 四个服务目前固定 `NODE_ID=1..4`，因此 Deployment 使用单副本 `Recreate`。直接扩副本或改为重叠滚动更新会有 ID 冲突风险。升级有短暂中断；要实现多副本滚动发布，先完善唯一节点号分配。通知服务还有实例内连接额度等扩容语义需要验证。
 
 当前属于采用企业常见交付规范的学习集群。三个节点共享同一 Docker Desktop 主机，单控制面与单数据库不具备生产高可用；local-path PVC 证明 Pod 重建后数据保留，不提供节点故障迁移、跨机副本或备份。生产还需要独立故障域、高可用数据库、可恢复备份、可信 TLS、镜像仓库/摘要与扫描、环境审批及监控告警等。
+
+榜单 Redis 成对跨节点调度，三个 Sentinel 分布在三个节点。部署脚本等待四组复制链路在线，并核对三个 Sentinel 的仲裁和主节点地址。共享 `redis` Service 继续提供应用限流、会话撤销及通知。榜单应用通过 Sentinel 提供的 Pod DNS 连接各片主节点。
 
 ## 更新与停止
 
@@ -60,5 +63,11 @@ kubectl -n activity logs deployment/activity --tail=50
 ## 验收记录
 
 `Verify-K3sLearning.ps1` 检查 HTTPS、资产初始化、抽奖与幂等、阶段与购买、榜单/RPC、SSE、Pod 自动恢复、MySQL Pod 重建后钱包数据不变、网络隔离、RBAC 和刷新/撤销。默认启用真实业务限流，操作间隔用于遵守阈值。该脚本会在学习集群注册测试账号，默认还会重建 identity 与 MySQL Pod。
+
+在隔离的学习集群中，使用活跃测试期次运行四分片故障验收。脚本使用 k3d 节点的 containerd 暂停 Redis/Sentinel 进程，检查 MySQL 降级、Redis 切主、主副本重启后的角色以及失去仲裁时的恢复。
+
+```powershell
+.\scripts\Verify-RankingRedisHA.ps1 -Environment K3s -EditionId 2026110601 -BaseUrl https://localhost:18443
+```
 
 成功运行后，证据位于 `.local/k3s/verification.json`。完整中文学习教程见 `docs/K3s部署学习教程.md`，经实测后另复制到 Windows 桌面。

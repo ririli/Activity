@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -85,7 +86,8 @@ func (a *hourlyTestActivity) Grant(_ context.Context, g hourly.Grant) (hourly.Re
 
 func TestHourlyBarrierRecovery(t *testing.T) {
 	dsn, addr := os.Getenv("RANKING_TEST_MYSQL_DSN"), os.Getenv("RANKING_TEST_REDIS_ADDR")
-	if dsn == "" || addr == "" || os.Getenv("RANKING_TEST_PREPARED_SCHEMA") != "1" {
+	physical := os.Getenv("RANKING_TEST_REDIS_SHARD_ADDRS")
+	if dsn == "" || (addr == "" && physical == "") || os.Getenv("RANKING_TEST_PREPARED_SCHEMA") != "1" {
 		t.Skip("requires disposable initialized ranking MySQL and Redis")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
@@ -95,11 +97,19 @@ func TestHourlyBarrierRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	redis := rdb.NewClient(&rdb.Options{Addr: addr})
-	defer redis.Close()
 	var clients [hourly.Shards]*rdb.Client
+	addresses := []string{addr, addr, addr, addr}
+	password := ""
+	if physical != "" {
+		addresses = strings.Split(physical, ",")
+		password = os.Getenv("RANKING_TEST_REDIS_PASSWORD")
+		if len(addresses) != len(clients) {
+			t.Fatal("RANKING_TEST_REDIS_SHARD_ADDRS must specify 4 addresses")
+		}
+	}
 	for i := range clients {
-		clients[i] = redis
+		clients[i] = rdb.NewClient(&rdb.Options{Addr: addresses[i], Password: password})
+		defer clients[i].Close()
 	}
 	store := HourlyStore{DB: db}
 	last := time.Now().UTC().Truncate(time.Hour)
@@ -178,6 +188,16 @@ func TestHourlyBarrierRecovery(t *testing.T) {
 	source.events[last.Unix()] = []platform.Event{{Type: "FormalDrawCommitted.v1", Payload: platform.JSON(changed)}}
 	if err := worker.Project(ctx, changed); err != nil {
 		t.Fatal(err)
+	}
+	// Replication preserves the old primary's metadata when a replica is promoted.
+	// Even with the correct member count, the window must be replayed for the new process.
+	shard := changed.Hourly.Shard
+	metaKey := fmt.Sprintf("ranking:hourly-worker-test:{%s:%d}:hourly:%d:meta", edition.ID, shard, last.Unix())
+	if err := clients[shard].HSet(ctx, metaKey, "run_id", "previousprimary").Err(); err != nil {
+		t.Fatal(err)
+	}
+	if positions, err := projection.Positions(ctx, hourly.Window{Edition: edition.ID, Cutoff: last.Unix()}, shard); err != nil || positions[changed.Hourly.Lane] != 0 {
+		t.Fatalf("changed primary must invalidate the old cursor: %v, %v", positions, err)
 	}
 	claimed, err := store.ClaimHourly(ctx)
 	if err != nil || claimed == nil || claimed.Cutoff != first.Unix() {

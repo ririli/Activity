@@ -20,9 +20,9 @@ spec:
   hard:
     requests.cpu: "4"
     requests.memory: "4Gi"
-    limits.cpu: "12"
+    limits.cpu: "16"
     limits.memory: "6Gi"
-    persistentvolumeclaims: "6"
+    persistentvolumeclaims: "16"
     pods: "24"
 ---
 apiVersion: "v1"

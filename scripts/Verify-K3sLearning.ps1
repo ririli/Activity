@@ -114,7 +114,9 @@ Api GET '/api/identity/v1/me' $null $renewed.access_token 401 | Out-Null
 Check $true 'logout revokes existing session'
 $pods = (K -n activity get pods -o json | ConvertFrom-Json).items
 $running = @($pods | Where-Object { $_.status.phase -eq 'Running' })
-Check ($running.Count -eq 8 -and @($running | Where-Object { $_.spec.containers.Count -ne 1 }).Count -eq 0) 'eight workloads, one application container per Pod'
+$rankingData = @($running | Where-Object { $_.metadata.labels.'activity-role' -eq 'ranking-data' })
+$sentinels = @($running | Where-Object { $_.metadata.labels.'activity-role' -eq 'ranking-sentinel' })
+Check ($running.Count -eq 19 -and $rankingData.Count -eq 8 -and $sentinels.Count -eq 3 -and @($running | Where-Object { $_.spec.containers.Count -ne 1 }).Count -eq 0) 'eight base workloads, eight ranking data Pods, and three Sentinels'
 $encryption = & docker exec k3d-activity-learn-server-0 k3s secrets-encrypt status 2>$null
 Check (($encryption -join "`n") -match 'Encryption Status: Enabled') 'K3s encrypts Kubernetes Secrets at rest'
 @{verifiedAt=(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz');url=$base;cluster='activity-learn';checks=$checks.ToArray();runningPods=$running.Count;imageTag=(Get-Content "$State/deployment.json" -Raw|ConvertFrom-Json).imageTag} | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 "$State/verification.json"

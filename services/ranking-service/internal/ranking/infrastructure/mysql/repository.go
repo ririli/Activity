@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"strconv"
 	"sync"
@@ -162,8 +163,8 @@ func (r *Repository) Board(ctx context.Context, edition, user string) (domain.Bo
 			if err == nil && s.generation.Load() == g {
 				return b, nil
 			}
-			if ctx.Err() == nil {
-				s.generation.CompareAndSwap(g, nil)
+			if ctx.Err() == nil && s.generation.CompareAndSwap(g, nil) {
+				slog.Warn("ranking cache read falling back to MySQL", "edition_id", edition, "error", err)
 			}
 		}
 	}
