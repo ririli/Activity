@@ -16,7 +16,6 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -38,6 +37,12 @@ func Must(err error) {
 	}
 }
 func OpenDB() *sql.DB {
+	db := openMySQL()
+	db.SetMaxOpenConns(20)
+	db.SetMaxIdleConns(10)
+	return db
+}
+func openMySQL() *sql.DB {
 	cfg, err := mysql.ParseDSN(os.Getenv("MYSQL_DSN"))
 	Must(err)
 	cfg.ParseTime = true
@@ -45,8 +50,6 @@ func OpenDB() *sql.DB {
 	cfg.Params = map[string]string{"time_zone": "'+00:00'"}
 	db, err := sql.Open("mysql", cfg.FormatDSN())
 	Must(err)
-	db.SetMaxOpenConns(20)
-	db.SetMaxIdleConns(10)
 	db.SetConnMaxLifetime(5 * time.Minute)
 	return db
 }
@@ -63,6 +66,11 @@ func (e *Fault) Error() string           { return e.Code }
 func Fail(status int, code string) error { return &Fault{status, code} }
 func Respond(c *gin.Context, v any, err error) {
 	if err != nil {
+		if errors.Is(err, ErrIDUnavailable) {
+			slog.Warn("ID issuance deferred", "error", err)
+			c.JSON(503, gin.H{"error": "ID_UNAVAILABLE"})
+			return
+		}
 		var admission interface {
 			HTTPStatus() int
 			ErrorCode() string
@@ -225,50 +233,6 @@ func MustRandom(b []byte) {
 	}
 }
 
-var idMu sync.Mutex
-var ids idSequence
-
-type idSequence struct {
-	lastMS   int64
-	next     int64
-	userSlot int64
-}
-
-func ID() uint64 { return allocateID(false) }
-
-// UserID distributes new accounts across the four user_id % 4 shards.
-func UserID() uint64 { return allocateID(true) }
-
-func allocateID(user bool) uint64 {
-	idMu.Lock()
-	defer idMu.Unlock()
-	node, err := strconv.ParseInt(Env("NODE_ID", "1"), 10, 10)
-	if err != nil || node < 0 || node > 1023 {
-		panic("invalid NODE_ID")
-	}
-	return ids.allocate(time.Now().UnixMilli()-1767225600000, node, user)
-}
-
-func (s *idSequence) allocate(ms, node int64, user bool) uint64 {
-	if ms < s.lastMS {
-		panic("clock moved backwards")
-	}
-	if ms != s.lastMS {
-		s.lastMS, s.next = ms, 0
-	}
-	seq := s.next
-	if user {
-		seq += (s.userSlot - seq) & 3
-	}
-	if seq >= 4096 {
-		panic("ID rate exhausted")
-	}
-	s.next = seq + 1
-	if user {
-		s.userSlot = (s.userSlot + 1) % 4
-	}
-	return uint64(ms<<22 | node<<12 | seq)
-}
 func Run(g *gin.Engine, worker func(context.Context)) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -294,8 +258,4 @@ func JSON(v any) []byte {
 		panic(e)
 	}
 	return b
-}
-func Outbox(ctx context.Context, tx *sql.Tx, kind string, user, aggregate uint64, payload any) error {
-	_, e := tx.ExecContext(ctx, `INSERT INTO outbox_event(event_id,event_type,aggregate_id,user_id,payload) VALUES(?,?,?,?,?)`, ID(), kind, aggregate, user, JSON(payload))
-	return e
 }

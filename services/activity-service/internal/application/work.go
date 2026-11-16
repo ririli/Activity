@@ -29,6 +29,7 @@ type work struct {
 	now           time.Time
 	nickname      string
 	runtime       Runtime
+	newID         func() (uint64, error)
 	messages      []map[string]any
 }
 
@@ -118,7 +119,11 @@ func (s *work) Grant(p lottery.Prize, source string, sourceID uint64, no int) (u
 	return s.assets.Grant(assetPrize(p), s.progress.Round, source, sourceID, no, 0)
 }
 func (s *work) Reliable(kind string, user, aggregate uint64, payload any) error {
-	ev := Event{ID: fmt.Sprint(s.runtime.NewID()), Type: kind, Payload: encode(payload)}
+	id, err := s.newID()
+	if err != nil {
+		return err
+	}
+	ev := Event{ID: fmt.Sprint(id), Type: kind, Payload: encode(payload)}
 	return s.session.Outbox.Append(ev, user, aggregate)
 }
 func (s *work) Notify(p lottery.Prize, grant uint64, source string) {

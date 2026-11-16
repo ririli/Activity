@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"activity/pkg/platform/testid"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -48,26 +49,26 @@ func TestSQLAndRedisDelta(t *testing.T) {
 			}
 		}
 	}
-	t.Setenv("APP_ENV", fmt.Sprintf("ranking-test-%d", platform.ID()))
+	t.Setenv("APP_ENV", fmt.Sprintf("ranking-test-%d", testid.Next()))
 	client := rdb.NewClient(&rdb.Options{Addr: addr})
 	defer client.Close()
 	projection := &cache.Cache{Client: client, LoadBounds: func(context.Context, string) (cache.Bounds, error) {
 		return cache.Bounds{Min: 100, End: 1000}, nil
 	}}
-	repo := &Repository{DB: db, Cache: projection}
-	edition := fmt.Sprint(platform.ID())
+	repo := &Repository{DB: db, NewID: testid.Generate, Cache: projection}
+	edition := fmt.Sprint(testid.Next())
 	defer projection.Retire(context.Background(), edition)
 	const user = "9007199254740993"
 	init := domain.Fact{Edition: edition, User: user, Created: "100"}
 	draw := func(seq, cost, at int) domain.Fact {
-		return domain.Fact{Edition: edition, User: user, Draw: fmt.Sprint(platform.ID()), Seq: fmt.Sprint(seq), Consumed: fmt.Sprint(cost), Occurred: fmt.Sprint(at)}
+		return domain.Fact{Edition: edition, User: user, Draw: fmt.Sprint(testid.Next()), Seq: fmt.Sprint(seq), Consumed: fmt.Sprint(cost), Occurred: fmt.Sprint(at)}
 	}
 	event := func(f domain.Fact) platform.Event {
 		kind := "ParticipationInitialized.v1"
 		if f.Draw != "" {
 			kind = "FormalDrawCommitted.v1"
 		}
-		return platform.Event{ID: fmt.Sprint(platform.ID()), Type: kind, Payload: platform.JSON(f)}
+		return platform.Event{ID: fmt.Sprint(testid.Next()), Type: kind, Payload: platform.JSON(f)}
 	}
 	consume := func(f domain.Fact) {
 		t.Helper()
@@ -100,7 +101,7 @@ func TestSQLAndRedisDelta(t *testing.T) {
 	}
 
 	// New service instance rebuilds from SQL, including the fact beyond the gap.
-	repo = &Repository{DB: db, Cache: projection}
+	repo = &Repository{DB: db, NewID: testid.Generate, Cache: projection}
 	workerCtx, stopWorker := context.WithCancel(ctx)
 	workerDone := make(chan struct{})
 	go func() {
@@ -144,14 +145,14 @@ func TestSQLAndRedisDelta(t *testing.T) {
 	expectBoard("redis", 112, 203)
 	// A process exit discards the old generation. The unacknowledged draw
 	// is applied when the broker redelivers it to the replacement instance.
-	repo = &Repository{DB: db, Cache: projection}
+	repo = &Repository{DB: db, NewID: testid.Generate, Cache: projection}
 	rebuild()
 	expectBoard("redis", 105, 202)
 	consume(third)
 	expectBoard("redis", 112, 203)
 
 	conflict := third
-	conflict.Draw = fmt.Sprint(platform.ID())
+	conflict.Draw = fmt.Sprint(testid.Next())
 	if err := repo.Consume(ctx, event(conflict)); err == nil {
 		t.Fatal("same sequence with a different draw ID was accepted")
 	}

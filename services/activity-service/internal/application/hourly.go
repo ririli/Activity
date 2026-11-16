@@ -26,7 +26,7 @@ type HourlyGrantStore interface {
 type HourlyService struct {
 	Queries HourlyQueries
 	UoW     UnitOfWork
-	NewID   func() uint64
+	NewID   func(context.Context) (uint64, error)
 }
 
 func (s HourlyService) Editions(ctx context.Context) ([]hourly.Edition, error) {
@@ -86,8 +86,11 @@ func (s HourlyService) Grant(ctx context.Context, g hourly.Grant) (hourly.Receip
 		if err != nil {
 			return err
 		}
-		asset := assets.Service{Repo: tx.Assets, NewID: s.NewID}
-		id = s.NewID()
+		asset := assets.Service{Repo: tx.Assets}
+		id, err = s.NewID(ctx)
+		if err != nil {
+			return err
+		}
 		err = tx.HourlyGrant.RecordHourlyGrant(ctx, g, id)
 		if err != nil {
 			return err

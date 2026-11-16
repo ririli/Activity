@@ -1,6 +1,10 @@
 services:
-  mysql:
+  mysql-activity:
     ports: !override ["127.0.0.1:23306:3306"]
+  mysql-identity:
+    ports: !override ["127.0.0.1:23307:3306"]
+  mysql-ranking:
+    ports: !override ["127.0.0.1:23308:3306"]
   redis:
     ports: !override ["127.0.0.1:26379:6379"]
   rabbitmq:

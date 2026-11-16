@@ -2,7 +2,7 @@ package redis
 
 import (
 	"activity/pkg/hourly"
-	"activity/pkg/platform"
+	"activity/pkg/platform/testid"
 	"activity/services/ranking-service/internal/ranking/domain"
 	"context"
 	"fmt"
@@ -51,7 +51,7 @@ func TestHourlyWindowAndShardedBoard(t *testing.T) {
 		}
 	}
 	load := func(context.Context, string) (Bounds, error) { return Bounds{Min: 100, End: 1000}, nil }
-	edition := fmt.Sprint(platform.ID())
+	edition := fmt.Sprint(testid.Next())
 	cache := HourlyCache{Clients: clients, LoadBounds: load, Namespace: "hourly-integration"}
 	old := hourly.Window{Edition: edition, Cutoff: 400}
 	next := hourly.Window{Edition: edition, Cutoff: 800}

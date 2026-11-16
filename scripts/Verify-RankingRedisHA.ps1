@@ -46,8 +46,8 @@ function Redis([string]$Name, [string[]]$Command) {
     }
 }
 
-function Sql([string]$Query) {
-    $name = if ($Environment -eq 'K3s') { 'mysql-0' } else { 'mysql' }
+function Sql([ValidateSet('activity','ranking')][string]$Database, [string]$Query) {
+    $name = if ($Environment -eq 'K3s') { "mysql-$Database-0" } else { "mysql-$Database" }
     Remote $name @('sh','-c','MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -N -e "$1"','_',$Query)
 }
 
@@ -131,7 +131,7 @@ foreach ($shard in 0..3) {
 }
 $rankingInstance = Ranking-Instance
 if ($VerifyHourly) {
-    $active = Sql "SELECT COUNT(*) FROM activity_core.hourly_ranking_window WHERE edition_id=$EditionId AND cutoff_sec=(FLOOR(UNIX_TIMESTAMP()/3600)+1)*3600 AND cutoff_sec-UNIX_TIMESTAMP()>=120;"
+    $active = Sql activity "SELECT COUNT(*) FROM activity_core.hourly_ranking_window WHERE edition_id=$EditionId AND cutoff_sec=(FLOOR(UNIX_TIMESTAMP()/3600)+1)*3600 AND cutoff_sec-UNIX_TIMESTAMP()>=120;"
     if ($active -ne '4') { throw 'Hourly verification requires an open cutoff at least two minutes away' }
 }
 $auth = Api POST '/api/identity/v1/auth/register' @{
@@ -186,11 +186,11 @@ try {
     Resume-Node $standby
     Resume-Node $primary
     Wait-Check { $view = Board; $view.source -eq 'redis' -and $view.me.score -eq 200 } 'rebuild from persisted draw facts' 60
-    $facts = Sql "SELECT CONCAT(COUNT(*), '|', SUM(consumed_petals)) FROM activity_ranking.score_fact WHERE edition_id=$EditionId AND user_id=$user;"
+    $facts = Sql ranking "SELECT CONCAT(COUNT(*), '|', SUM(consumed_petals)) FROM activity_ranking.score_fact WHERE edition_id=$EditionId AND user_id=$user;"
     if ($facts -ne '2|200') { throw "Expected two persisted draw facts scoring 200, got $facts" }
     if ($VerifyHourly) {
         $drawId = [uint64]::Parse($committed.draw_id)
-        $row = Sql "SELECT CONCAT_WS('|', hourly_cutoff_sec, hourly_lane, hourly_seq, payload->>'$.score_reached_at_sec', UNIX_TIMESTAMP(e.starts_at), UNIX_TIMESTAMP(e.ends_at)) FROM activity_core.outbox_event o JOIN activity_core.activity_edition e ON e.edition_id=o.hourly_edition_id WHERE o.event_type='FormalDrawCommitted.v1' AND o.aggregate_id=$drawId AND o.user_id=$user AND o.hourly_shard=$shard;"
+        $row = Sql activity "SELECT CONCAT_WS('|', hourly_cutoff_sec, hourly_lane, hourly_seq, payload->>'$.score_reached_at_sec', UNIX_TIMESTAMP(e.starts_at), UNIX_TIMESTAMP(e.ends_at)) FROM activity_core.outbox_event o JOIN activity_core.activity_edition e ON e.edition_id=o.hourly_edition_id WHERE o.event_type='FormalDrawCommitted.v1' AND o.aggregate_id=$drawId AND o.user_id=$user AND o.hourly_shard=$shard;"
         $cutoff, $lane, $seq, $reached, $starts, $ends = ([string]$row).Split('|')
         if (-not $seq -or -not $ends) { throw 'Missing persisted hourly draw position' }
         $member = [uint64]([decimal][uint64]::MaxValue - [decimal]$user)
@@ -222,7 +222,7 @@ try {
     $evidence.primary = $standby
     $evidence.shard = $shard
     $evidence.replication = @(Redis $standby @('INFO','replication') | Where-Object { $_ -match '^role:|^connected_slaves:|^slave0:' })
-    $evidence.pendingHourlyWindows = [int](Sql "SELECT COUNT(*) FROM activity_ranking.hourly_settlement WHERE edition_id=$EditionId AND status <> 'COMPLETED' AND cutoff_sec <= UNIX_TIMESTAMP();")
+    $evidence.pendingHourlyWindows = [int](Sql ranking "SELECT COUNT(*) FROM activity_ranking.hourly_settlement WHERE edition_id=$EditionId AND status <> 'COMPLETED' AND cutoff_sec <= UNIX_TIMESTAMP();")
     $evidence.finalScore = 200
     [pscustomobject]$evidence | ConvertTo-Json -Depth 4
 } finally {

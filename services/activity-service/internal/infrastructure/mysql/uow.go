@@ -13,12 +13,15 @@ import (
 	"fmt"
 )
 
-type UnitOfWork struct{ DB *sql.DB }
+type UnitOfWork struct {
+	DB    *sql.DB
+	NewID func(context.Context) (uint64, error)
+}
 
 func (m UnitOfWork) session(ctx context.Context, tx *sql.Tx, s app.Scope, o *outbox) app.Session {
 	port := sqlkit.Wrap(tx)
-	a := &assets.Repository{Tx: port, Ctx: ctx, User: s.User, Edition: s.Edition, Biz: s.Biz}
-	l := &lottery.Repository{Tx: port, Ctx: ctx, User: s.User, Edition: s.Edition, Biz: s.Biz}
+	a := &assets.Repository{Tx: port, Ctx: ctx, User: s.User, Edition: s.Edition, Biz: s.Biz, NewID: m.NewID}
+	l := &lottery.Repository{Tx: port, Ctx: ctx, User: s.User, Edition: s.Edition, Biz: s.Biz, NewID: m.NewID}
 	p := &participation.Repository{Tx: port, Ctx: ctx, User: s.User, Edition: s.Edition, Biz: s.Biz}
 	return app.Session{Assets: a, Lottery: l, Participation: p, Outbox: o, AdmitHourly: o.admit(s), HourlyGrant: hourlyGrantStore{tx}, BindRound: func(round int, progress int64) {
 		a.Round = round

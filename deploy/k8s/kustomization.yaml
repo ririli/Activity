@@ -4,7 +4,7 @@ namespace: "activity"
 resources:
   - "namespace.yaml"
   - "config.yaml"
-  - "mysql.yaml"
+  - "mysql"
   - "redis.yaml"
   - "ranking-redis.yaml"
   - "ranking-redis-network.yaml"

@@ -1,0 +1,101 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mysql-identity-clients
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mysql-service
+      database-service: identity
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: identity
+        - podSelector:
+            matchLabels:
+              activity-role: database-job
+              database-service: identity
+      ports:
+        - protocol: TCP
+          port: 3306
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mysql-activity-clients
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mysql-service
+      database-service: activity
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: activity
+        - podSelector:
+            matchLabels:
+              activity-role: database-job
+              database-service: activity
+      ports:
+        - protocol: TCP
+          port: 3306
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mysql-ranking-clients
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mysql-service
+      database-service: ranking
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ranking
+        - podSelector:
+            matchLabels:
+              activity-role: database-job
+              database-service: ranking
+      ports:
+        - protocol: TCP
+          port: 3306
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: split-mysql-database-jobs
+spec:
+  podSelector:
+    matchLabels:
+      activity-role: database-job
+    matchExpressions:
+      - key: database-service
+        operator: Exists
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mysql-service
+      ports:
+        - protocol: TCP
+          port: 3306
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

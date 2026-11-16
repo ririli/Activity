@@ -51,6 +51,8 @@ type Service struct {
 	Revocations     RevocationStore
 	HashSlots       chan struct{}
 	DummyHash       string
+	NewID           func(context.Context) (uint64, error)
+	NewUserID       func(context.Context) (uint64, error)
 }
 type Credentials struct {
 	Account  string `json:"account"`
@@ -107,7 +109,15 @@ func (s *Service) Register(ctx context.Context, c Credentials, ip string) (Token
 	if nick == "" {
 		nick = c.Account
 	}
-	a := domain.Account{UserID: platform.UserID(), Name: c.Account, Nickname: nick, PasswordHash: hash, Status: "ACTIVE"}
+	user, e := s.NewUserID(ctx)
+	if e != nil {
+		return Tokens{}, e
+	}
+	event, e := s.NewID(ctx)
+	if e != nil {
+		return Tokens{}, e
+	}
+	a := domain.Account{UserID: user, Name: c.Account, Nickname: nick, PasswordHash: hash, Status: "ACTIVE"}
 	sid := platform.Random()
 	expiry := time.Now().UTC().Add(7 * 24 * time.Hour)
 	tokens, e := s.issue(a, sid, expiry)
@@ -115,7 +125,7 @@ func (s *Service) Register(ctx context.Context, c Credentials, ip string) (Token
 		return Tokens{}, e
 	}
 	session := domain.Session{ID: sid, UserID: a.UserID, RefreshHash: sha256.Sum256([]byte(tokens.Refresh)), ExpiresAt: expiry}
-	e = s.Repo.Register(ctx, a, session, platform.ID(), platform.JSON(map[string]string{"user_id": tokens.UserID}))
+	e = s.Repo.Register(ctx, a, session, event, platform.JSON(map[string]string{"user_id": tokens.UserID}))
 	if e != nil { // Only the account-name uniqueness constraint is an expected conflict.
 		var lookup domain.Account
 		lookup, check := s.Repo.AccountByName(ctx, c.Account)

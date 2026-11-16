@@ -1,6 +1,7 @@
 package application
 
 import (
+	"activity/pkg/platform"
 	assets "activity/services/activity-service/internal/assets/application"
 	ad "activity/services/activity-service/internal/assets/domain"
 	"activity/services/activity-service/internal/fault"
@@ -10,6 +11,7 @@ import (
 	pd "activity/services/activity-service/internal/participation/domain"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"testing"
@@ -218,7 +220,7 @@ func fixture() (Service, *memoryUoW, *effectsStub, *lockStub) {
 	effects := &effectsStub{}
 	lock := &lockStub{}
 	id := uint64(100)
-	s := Service{UoW: u, Lock: lock, Effects: effects, Runtime: Runtime{NewID: func() uint64 { id++; return id }, Now: func() time.Time { return now }, Random: func(n int64) (int64, error) { u.randoms++; return 0, nil }}}
+	s := Service{UoW: u, Lock: lock, Effects: effects, Runtime: Runtime{NewID: func(context.Context) (uint64, error) { id++; return id, nil }, Now: func() time.Time { return now }, Random: func(n int64) (int64, error) { u.randoms++; return 0, nil }}}
 	return s, u, effects, lock
 }
 func drawCommand() DrawCommand {
@@ -257,6 +259,35 @@ func TestDrawFailuresRollbackAllModules(t *testing.T) {
 				t.Fatal("published effects after rollback")
 			}
 		})
+	}
+}
+
+func TestDrawRetriesAfterIDUnavailable(t *testing.T) {
+	for _, failAt := range []int{1, 3} {
+		s, u, effects, _ := fixture()
+		before := u.state
+		original := s.Runtime.NewID
+		calls := 0
+		s.Runtime.NewID = func(ctx context.Context) (uint64, error) {
+			calls++
+			if calls == failAt {
+				return 0, platform.ErrIDUnavailable
+			}
+			return original(ctx)
+		}
+		cmd := drawCommand()
+		if _, err := s.Draw(context.Background(), cmd); !errors.Is(err, platform.ErrIDUnavailable) {
+			t.Fatalf("allocation %d: expected retryable failure, got %v", failAt, err)
+		}
+		if !reflect.DeepEqual(u.state, before) || len(effects.messages) != 0 {
+			t.Fatalf("allocation %d left partial state", failAt)
+		}
+		if _, err := s.Draw(context.Background(), cmd); err != nil {
+			t.Fatal(err)
+		}
+		if len(u.state.Draws) != 1 || u.state.Wallet.Petals != 900 {
+			t.Fatal("retry failed to commit exactly one draw")
+		}
 	}
 }
 func TestFullRoundRefundAndImmutableResult(t *testing.T) {

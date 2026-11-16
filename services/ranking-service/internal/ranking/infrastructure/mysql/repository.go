@@ -18,6 +18,7 @@ import (
 )
 
 type Repository struct {
+	NewID         func(context.Context) (uint64, error)
 	DB            *sql.DB
 	Cache         *cache.Cache
 	ProjectHourly func(context.Context, domain.Fact) error

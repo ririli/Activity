@@ -293,7 +293,12 @@ func (r *Repository) freeze(ctx context.Context, edition, owner string) (domain.
 			}{"1207809", "春日公主头像框"})
 		}
 		for i, p := range items {
-			awards = append(awards, awardRow{id: platform.ID(), user: w.user, rank: w.rank, entry: i + 1, item: p.id, name: p.name})
+			id, err := r.NewID(ctx)
+			if err != nil {
+				_ = tx.Rollback()
+				return r.retryLater(ctx, edition, owner, err)
+			}
+			awards = append(awards, awardRow{id: id, user: w.user, rank: w.rank, entry: i + 1, item: p.id, name: p.name})
 		}
 	}
 	for start := 0; start < len(awards); start += 100 {

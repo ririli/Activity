@@ -1,4 +1,4 @@
--- Read-only inspection after importing migrations. Expected counts: 3 / 35 / 9.
+-- Run on each instance. Expect only its own business schema: identity 4, core 36, ranking 10.
 SELECT TABLE_SCHEMA, COUNT(*) AS table_count,
        SUM(ENGINE = 'InnoDB') AS innodb_count
 FROM information_schema.TABLES
@@ -6,7 +6,7 @@ WHERE TABLE_SCHEMA IN ('activity_identity', 'activity_core', 'activity_ranking')
   AND TABLE_TYPE = 'BASE TABLE'
 GROUP BY TABLE_SCHEMA ORDER BY TABLE_SCHEMA;
 
--- Expected: four rows per logical family, 16 record tables total.
+-- On mysql-activity, expect four rows per logical family, 16 record tables total.
 SELECT TABLE_NAME, ENGINE
 FROM information_schema.TABLES
 WHERE TABLE_SCHEMA = 'activity_core'

@@ -3,7 +3,7 @@
 Windows / PowerShell 7 / Docker Desktop Linux engine。使用 k3d 5.9.0 承载 k3s 1.35.5+k3s1，集群名 `activity-learn`，1 个 server、2 个 agent。Kubeconfig 独立保存在 `.local/k3s/kubeconfig.yaml`。
 
 ```powershell
-Set-Location D:\gopath\src\Activity
+# 在仓库根目录执行。
 .\scripts\Install-K3sLearning.ps1
 .\scripts\Deploy-K3sLearning.ps1
 .\scripts\Verify-K3sLearning.ps1
@@ -14,7 +14,8 @@ Set-Location D:\gopath\src\Activity
 ## 文件职责
 
 - `identity/activity/ranking/notification.yaml`：四个独立 Deployment 与 ClusterIP Service，每 Pod 一个业务容器。
-- `mysql/redis/rabbitmq.yaml`：三个单副本 StatefulSet、Service 与 PVC。
+- `mysql/`：账号、活动和榜单各一个 MySQL StatefulSet、Service、PVC 和管理员 Secret。活动的四组分表仍位于 `mysql-activity`。
+- `redis.yaml`、`rabbitmq.yaml`：共享 Redis 与 RabbitMQ 的 StatefulSet、Service 和 PVC。
 - `ranking-redis.yaml`、`ranking-redis-network.yaml`：四组榜单 Redis 主从、三个共享 Sentinel、固定 Pod DNS、独立 PVC 和网络访问规则。
 - `web.yaml`：静态前端与已有 Nginx API 入口，Traefik Ingress 终止 TLS。
 - `config.yaml`、两个 `nginx*.conf`：公开运行配置；口令与私钥由脚本创建为 Secret。
@@ -29,11 +30,17 @@ Set-Location D:\gopath\src\Activity
 
 应用使用非 root 用户、只读根文件系统、关闭权限提升、丢弃 capabilities、RuntimeDefault seccomp、不挂载 ServiceAccount token。只读运维 Role 不含 Secret 或写权限。K3s 启用 Secret 静态加密；随机密码、JWT 私钥、TLS 私钥和管理员 kubeconfig 仍属于敏感文件，保存在 Git 忽略的 `.local/k3s/`。
 
-三个服务数据库使用不同账号，只授权各自逻辑库 DML；迁移 Job 使用管理员账号。迁移与 seed Job 保留完成状态，重复部署不会重新初始化业务数据。若旧 Job 失败或 Secret 文件丢失，先排查并恢复，脚本不会擅自重建数据库或替换数据库口令。
+三个应用分别连接 `mysql-identity:3306/activity_identity`、`mysql-activity:3306/activity_core` 和 `mysql-ranking:3306/activity_ranking`，应用账号仅拥有本库 DML 权限。迁移 Job 按实例运行，使用各自管理员账号。迁移与 seed Job 保留完成状态，重复部署不会重新初始化业务数据。若 Job 失败或凭据文件丢失，先检查现有资源和数据。
+
+### 已有共享 MySQL 的学习集群
+
+1. 运行 `./scripts/Deploy-K3sLearning.ps1 -PrepareDatabasesOnly`，创建三个新实例并应用各自迁移。旧服务继续使用原来的 `mysql` 和 PVC。
+2. 停止旧集群写入和消费者。使用旧 `mysql-0` 导出 `activity_identity`、`activity_core` 和 `activity_ranking`。源库结构与新迁移一致时，使用 `mysqldump --single-transaction --no-create-info --complete-insert --no-tablespaces <逻辑库>`，分别导入 `mysql-identity-0`、`mysql-activity-0`、`mysql-ranking-0` 对应的空库。核对表行数、活动期次和钱包余额。
+3. 运行 `./scripts/Deploy-K3sLearning.ps1 -ConfirmMySQLCutover`，将应用切到新连接。已有默认期次时跳过 Seed。验证完成后，按保留策略处理旧 `mysql` 工作负载，保留旧 PVC 作为回退数据。
 
 ## 部署约束
 
-四个服务目前固定 `NODE_ID=1..4`，因此 Deployment 使用单副本 `Recreate`。直接扩副本或改为重叠滚动更新会有 ID 冲突风险。升级有短暂中断；要实现多副本滚动发布，先完善唯一节点号分配。通知服务还有实例内连接额度等扩容语义需要验证。
+账号、活动和榜单服务使用固定 `NODE_ID`，Deployment 采用单副本 `Recreate`。扩副本时需为发号进程分配独立节点号。`mysql-*-schema-v2` Job 在新应用启动前创建发号预留表。首次切换时确保旧发号进程已退出且系统时间已越过旧版最后发号的毫秒；无法确认时使用从未分配的节点号。通知服务还有实例内连接额度等扩容语义需要验证。 [发号配置与恢复](../local/README.md#数据库迁移)
 
 当前属于采用企业常见交付规范的学习集群。三个节点共享同一 Docker Desktop 主机，单控制面与单数据库不具备生产高可用；local-path PVC 证明 Pod 重建后数据保留，不提供节点故障迁移、跨机副本或备份。生产还需要独立故障域、高可用数据库、可恢复备份、可信 TLS、镜像仓库/摘要与扫描、环境审批及监控告警等。
 
@@ -49,7 +56,7 @@ Set-Location D:\gopath\src\Activity
 .\scripts\Deploy-K3sLearning.ps1 -ImageTag 20261106-1 -SkipBuild
 
 # 仅当前 PowerShell 会话选择此集群，不改默认 kubeconfig。
-$env:KUBECONFIG = 'D:\gopath\src\Activity\.local\k3s\kubeconfig.yaml'
+$env:KUBECONFIG = (Resolve-Path '.local/k3s/kubeconfig.yaml').Path
 kubectl -n activity get pods,svc,ingress,pvc
 kubectl -n activity logs deployment/activity --tail=50
 
@@ -70,4 +77,4 @@ kubectl -n activity logs deployment/activity --tail=50
 .\scripts\Verify-RankingRedisHA.ps1 -Environment K3s -EditionId 2026110601 -BaseUrl https://localhost:18443
 ```
 
-成功运行后，证据位于 `.local/k3s/verification.json`。完整中文学习教程见 `docs/K3s部署学习教程.md`，经实测后另复制到 Windows 桌面。
+成功运行后，验证结果位于 `.local/k3s/verification.json`。

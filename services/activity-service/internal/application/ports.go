@@ -46,7 +46,7 @@ type Queries interface {
 	BootstrapCandidates(context.Context) ([]JoinCommand, error)
 }
 type Runtime struct {
-	NewID  func() uint64
+	NewID  func(context.Context) (uint64, error)
 	Now    func() time.Time
 	Random func(int64) (int64, error)
 }

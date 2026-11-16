@@ -6,13 +6,16 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 & (Join-Path $PSScriptRoot 'Generate-RecordMigrations.ps1') -Check
 $files = @(
     'services/identity-service/migrations/001_initial.sql',
+    'services/identity-service/migrations/002_snowflake.sql',
     'services/activity-service/migrations/001_initial.sql',
     'services/activity-service/migrations/002_records.sql',
     'services/activity-service/migrations/005_hourly_ranking.sql',
+    'services/activity-service/migrations/006_snowflake.sql',
     'services/ranking-service/migrations/001_initial.sql',
-    'services/ranking-service/migrations/003_hourly_ranking.sql'
+    'services/ranking-service/migrations/003_hourly_ranking.sql',
+    'services/ranking-service/migrations/004_snowflake.sql'
 )
-$counts = @{ activity_identity = 3; activity_core = 35; activity_ranking = 9 }
+$counts = @{ activity_identity = 4; activity_core = 36; activity_ranking = 10 }
 $tables = @{}
 foreach ($relativePath in $files) {
     $sql = [IO.File]::ReadAllText((Join-Path $projectRoot $relativePath))

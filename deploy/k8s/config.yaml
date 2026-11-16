@@ -20,14 +20,3 @@ data:
   COOKIE_SECURE: "true"
   RATE_LIMIT_MODE: "enforce"
   NOTIFICATION_MAX_CONNECTIONS: "1000"
----
-apiVersion: "v1"
-kind: "ConfigMap"
-metadata:
-  name: "mysql-config"
-  namespace: "activity"
-  labels:
-    app.kubernetes.io/name: "mysql-config"
-    app.kubernetes.io/part-of: "activity"
-data:
-  learning.cnf: "[mysqld]\nmax_connections=100\ninnodb_buffer_pool_size=256M\ncharacter-set-server=utf8mb4\ncollation-server=utf8mb4_0900_bin\n"

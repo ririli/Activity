@@ -3,6 +3,7 @@ package mysql
 import (
 	"activity/pkg/hourly"
 	"activity/pkg/platform"
+	"activity/pkg/platform/testid"
 	app "activity/services/ranking-service/internal/ranking/application"
 	"activity/services/ranking-service/internal/ranking/domain"
 	cache "activity/services/ranking-service/internal/ranking/infrastructure/redis"
@@ -75,7 +76,7 @@ func (a *hourlyTestActivity) Replay(_ context.Context, req hourly.Replay) ([]pla
 func (a *hourlyTestActivity) Grant(_ context.Context, g hourly.Grant) (hourly.Receipt, error) {
 	key := g.Settlement + "/" + g.User
 	if a.receipts[key] == "" {
-		a.receipts[key] = fmt.Sprint(platform.ID())
+		a.receipts[key] = fmt.Sprint(testid.Next())
 	}
 	if a.loseReceipt {
 		a.loseReceipt = false
@@ -111,11 +112,11 @@ func TestHourlyBarrierRecovery(t *testing.T) {
 		clients[i] = rdb.NewClient(&rdb.Options{Addr: addresses[i], Password: password})
 		defer clients[i].Close()
 	}
-	store := HourlyStore{DB: db}
+	store := HourlyStore{DB: db, NewID: testid.Generate}
 	last := time.Now().UTC().Truncate(time.Hour)
 	first := last.Add(-time.Hour)
 	start, end := first.Add(-time.Minute), last.Add(time.Hour)
-	edition := hourly.Edition{ID: fmt.Sprint(platform.ID()), Start: start, End: end}
+	edition := hourly.Edition{ID: fmt.Sprint(testid.Next()), Start: start, End: end}
 	source := &hourlyTestActivity{edition: edition, events: make(map[int64][]platform.Event), receipts: make(map[string]string), loseReceipt: true}
 	projection := cache.HourlyCache{Clients: clients, Namespace: "hourly-worker-test", LoadBounds: func(context.Context, string) (cache.Bounds, error) {
 		return cache.Bounds{Min: start.Unix(), End: end.Unix()}, nil

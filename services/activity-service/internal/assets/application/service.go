@@ -8,7 +8,7 @@ import (
 
 type Service struct {
 	Repo  Repository
-	NewID func() uint64
+	NewID func() (uint64, error)
 	Entry int
 }
 
@@ -33,7 +33,10 @@ func (s *Service) Apply(w *domain.Wallet, asset string, delta int64, reason, kin
 	return nil
 }
 func (s Service) Grant(p domain.Prize, round int, source string, sourceID uint64, no int, draw uint64) (uint64, error) {
-	id := s.NewID()
+	id, err := s.NewID()
+	if err != nil {
+		return 0, err
+	}
 	return id, s.Repo.SaveGrants([]Grant{{ID: id, Round: round, Prize: p, Source: source, SourceID: sourceID, No: no, DrawID: draw}})
 }
 func (s Service) Select(id, item string) (domain.Prize, string, uint64, error) {

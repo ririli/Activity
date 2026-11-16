@@ -78,7 +78,7 @@ spec:
               name: "MYSQL_DSN"
               valueFrom:
                 secretKeyRef:
-                  name: "identity-db"
+                  name: "identity-split-db"
                   key: "MYSQL_DSN"
             -
               name: "ACCESS_KEY_FILE"

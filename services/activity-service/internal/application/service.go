@@ -30,8 +30,9 @@ func uid(v string) (uint64, error) {
 	}
 	return id, nil
 }
-func (s Service) newWork(tx Session, scope Scope, nickname string) *work {
-	return &work{session: tx, scope: scope, nickname: nickname, runtime: s.Runtime, assets: assetsapp.Service{Repo: tx.Assets, NewID: s.Runtime.NewID}, lottery: lotteryapp.Service{Repo: tx.Lottery, Random: s.Runtime.Random, Now: s.Runtime.Now}, participation: partapp.Service{Repo: tx.Participation}}
+func (s Service) newWork(ctx context.Context, tx Session, scope Scope, nickname string) *work {
+	newID := func() (uint64, error) { return s.Runtime.NewID(ctx) }
+	return &work{session: tx, scope: scope, nickname: nickname, runtime: s.Runtime, newID: newID, assets: assetsapp.Service{Repo: tx.Assets, NewID: newID}, lottery: lotteryapp.Service{Repo: tx.Lottery, Random: s.Runtime.Random, Now: s.Runtime.Now}, participation: partapp.Service{Repo: tx.Participation}}
 }
 func (s Service) mutate(ctx context.Context, a Actor, active bool, fn func(*work) (any, error)) (any, error) {
 	return s.mutateWithRanking(ctx, a, active, false, fn)
@@ -56,11 +57,15 @@ func (s Service) mutateWithRanking(ctx context.Context, a Actor, active, scoring
 		return nil, err
 	}
 	defer release()
-	scope := Scope{User: user, Edition: edition, Biz: s.Runtime.NewID()}
+	biz, err := s.Runtime.NewID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	scope := Scope{User: user, Edition: edition, Biz: biz}
 	var out any
 	var completed *work
 	err = s.UoW.Within(ctx, scope, func(tx Session) error {
-		w := s.newWork(tx, scope, a.DisplayName)
+		w := s.newWork(ctx, tx, scope, a.DisplayName)
 		if e := w.Load(active, scoring); e != nil {
 			return e
 		}
@@ -151,7 +156,11 @@ func (s Service) Draw(ctx context.Context, c DrawCommand) (any, error) {
 	cmd := lotteryapp.DrawCommand{Edition: c.Edition, Operation: c.Operation, Pool: c.Pool, Count: c.Count}
 	var out any
 	var found bool
-	err = s.UoW.Read(ctx, scope, func(tx Session) error { var e error; out, found, e = s.newWork(tx, scope, "").Recover(cmd); return e })
+	err = s.UoW.Read(ctx, scope, func(tx Session) error {
+		var e error
+		out, found, e = s.newWork(ctx, tx, scope, "").Recover(cmd)
+		return e
+	})
 	if err != nil || found {
 		return out, err
 	}
@@ -167,10 +176,13 @@ func (s Service) Draw(ctx context.Context, c DrawCommand) (any, error) {
 		return nil, err
 	}
 	defer release()
-	scope.Biz = s.Runtime.NewID()
+	scope.Biz, err = s.Runtime.NewID(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var completed *work
 	err = s.UoW.Within(ctx, scope, func(tx Session) error {
-		w := s.newWork(tx, scope, c.DisplayName)
+		w := s.newWork(ctx, tx, scope, c.DisplayName)
 		var e error
 		out, found, e = w.Recover(cmd)
 		if e != nil || found {
@@ -258,13 +270,20 @@ func (s Service) GrantRankingAward(ctx context.Context, c RankingAwardCommand) e
 		}
 		grant, err := tx.Assets.FindRankingGrant(award)
 		if errors.Is(err, fault.ErrNotFound) {
-			grant = s.Runtime.NewID()
+			grant, err = s.Runtime.NewID(ctx)
+			if err != nil {
+				return err
+			}
 			err = tx.Assets.InsertRankingGrant(grant, award, c.Item, c.Name, item, c.Quantity)
 		}
 		if err != nil {
 			return err
 		}
-		ev := Event{ID: fmt.Sprint(s.Runtime.NewID()), Type: "RankingAwardGranted.v1", Payload: encode(map[string]string{"award_id": c.Award, "user_id": c.User, "edition_id": c.Edition, "grant_id": fmt.Sprint(grant)})}
+		eventID, err := s.Runtime.NewID(ctx)
+		if err != nil {
+			return err
+		}
+		ev := Event{ID: fmt.Sprint(eventID), Type: "RankingAwardGranted.v1", Payload: encode(map[string]string{"award_id": c.Award, "user_id": c.User, "edition_id": c.Edition, "grant_id": fmt.Sprint(grant)})}
 		return tx.Outbox.Append(ev, user, award)
 	})
 }

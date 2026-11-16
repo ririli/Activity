@@ -38,6 +38,9 @@ func intEnv(key string, fallback int) int {
 func main() {
 	db := platform.OpenDB()
 	defer db.Close()
+	ids, closeIDs, err := platform.OpenIDs()
+	platform.Must(err)
+	defer closeIDs()
 	r := platform.Redis()
 	defer r.Close()
 	clients, err := rankingRedisClients(r)
@@ -65,8 +68,8 @@ func main() {
 		projection.Client = r
 	}
 	hourlyCache := &cache.HourlyCache{Clients: clients, LoadBounds: loadBounds, Namespace: platform.Env("APP_ENV", "local")}
-	hourlyWorker := application.HourlyWorker{Store: store.HourlyStore{DB: db}, Activity: activityhttp.Client{URL: activityURL}, Projection: hourlyCache, Wake: make(chan struct{}, 1)}
-	repo := &store.Repository{DB: db, Cache: projection, ProjectHourly: hourlyWorker.Project}
+	hourlyWorker := application.HourlyWorker{Store: store.HourlyStore{DB: db, NewID: ids.Next}, Activity: activityhttp.Client{URL: activityURL}, Projection: hourlyCache, Wake: make(chan struct{}, 1)}
+	repo := &store.Repository{DB: db, NewID: ids.Next, Cache: projection, ProjectHourly: hourlyWorker.Project}
 	profiles, err := identitygrpc.New(
 		platform.Env("IDENTITY_GRPC_ADDR", "localhost:9090"),
 		os.Getenv("INTERNAL_TOKEN"),

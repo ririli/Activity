@@ -1,10 +1,10 @@
 apiVersion: "batch/v1"
 kind: "Job"
 metadata:
-  name: "activity-seed-v1"
+  name: "activity-seed-v2"
   namespace: "activity"
   labels:
-    app.kubernetes.io/name: "activity-seed-v1"
+    app.kubernetes.io/name: "activity-seed-v2"
     app.kubernetes.io/part-of: "activity"
 spec:
   backoffLimit: 0
@@ -15,6 +15,7 @@ spec:
         app.kubernetes.io/name: "seed"
         app.kubernetes.io/part-of: "activity"
         activity-role: "database-job"
+        database-service: "activity"
     spec:
       automountServiceAccountToken: false
       securityContext:
@@ -33,13 +34,13 @@ spec:
           command:
             - "sh"
             - "-ec"
-            - "for attempt in $(seq 1 30); do if nc -z -w 2 mysql 3306; then exec /seed; fi; sleep 1; done; echo 'MySQL is not reachable' >&2; exit 1"
+            - "for attempt in $(seq 1 30); do if nc -z -w 2 mysql-activity 3306; then exec /seed; fi; sleep 1; done; echo 'MySQL is not reachable' >&2; exit 1"
           env:
             -
               name: "MYSQL_DSN"
               valueFrom:
                 secretKeyRef:
-                  name: "schema-core"
+                  name: "activity-split-db"
                   key: "MYSQL_DSN"
             -
               name: "NODE_ID"

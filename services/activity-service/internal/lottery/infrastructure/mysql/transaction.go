@@ -12,6 +12,7 @@ type Repository struct {
 	User, Edition, Biz uint64
 	Round              int
 	Progress           int64
+	NewID              func(context.Context) (uint64, error)
 }
 
 func (s *Repository) FindPreview() (id uint64, raw []byte, status string, cost int64, err error) {

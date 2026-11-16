@@ -156,7 +156,8 @@ spec:
         -
           podSelector:
             matchLabels:
-              app.kubernetes.io/name: "mysql"
+              app.kubernetes.io/name: "mysql-service"
+              database-service: "identity"
       ports:
         -
           protocol: "TCP"
@@ -243,7 +244,8 @@ spec:
         -
           podSelector:
             matchLabels:
-              app.kubernetes.io/name: "mysql"
+              app.kubernetes.io/name: "mysql-service"
+              database-service: "activity"
       ports:
         -
           protocol: "TCP"
@@ -334,7 +336,8 @@ spec:
         -
           podSelector:
             matchLabels:
-              app.kubernetes.io/name: "mysql"
+              app.kubernetes.io/name: "mysql-service"
+              database-service: "ranking"
       ports:
         -
           protocol: "TCP"

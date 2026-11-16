@@ -21,7 +21,10 @@ func claimStage(s *work, stage int, source string) (any, error) {
 	if err = s.progress.Claim(stage); err != nil {
 		return nil, err
 	}
-	claimID := s.runtime.NewID()
+	claimID, err := s.newID()
+	if err != nil {
+		return nil, err
+	}
 	grant, err = s.Grant(prize, "STAGE", claimID, 1)
 	if err != nil {
 		return nil, err

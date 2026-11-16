@@ -70,7 +70,10 @@ func draw(s *work, c lotteryapp.DrawCommand, fixed *lottery.Plan, previewID uint
 	grants := make([]assetsapp.Grant, 0, len(plan.Steps))
 	results := make([]lotteryapp.DrawStep, 0, len(plan.Steps))
 	for i, step := range plan.Steps {
-		id := s.runtime.NewID()
+		id, err := s.newID()
+		if err != nil {
+			return nil, err
+		}
 		grants = append(grants, assetsapp.Grant{ID: id, Round: s.progress.Round, Prize: assetPrize(step.Prize), Source: source, SourceID: s.scope.Biz, No: i + 1, DrawID: s.scope.Biz})
 		results = append(results, lotteryapp.DrawStep{Step: step, GrantID: fmt.Sprint(id)})
 		if source != "PREVIEW" {

@@ -82,7 +82,7 @@ spec:
               name: "MYSQL_DSN"
               valueFrom:
                 secretKeyRef:
-                  name: "ranking-db"
+                  name: "ranking-split-db"
                   key: "MYSQL_DSN"
           securityContext:
             allowPrivilegeEscalation: false

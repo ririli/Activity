@@ -11,9 +11,17 @@ func (s *Repository) SaveDraw(w app.DrawWrite) error {
 	flowers := make([][]any, 0, len(w.Plan.Steps))
 	for i, step := range w.Plan.Steps {
 		no := i + 1
-		details = append(details, []any{platform.ID(), s.User, s.Edition, w.ID, no, step.Prize.Code, step.Prize.Name, step.Prize.Quantity, w.UnitCost, step.Before, step.Probability, step.After - step.Before - step.Probability, step.After, step.GoldValue})
+		id, err := s.NewID(s.Ctx)
+		if err != nil {
+			return err
+		}
+		details = append(details, []any{id, s.User, s.Edition, w.ID, no, step.Prize.Code, step.Prize.Name, step.Prize.Quantity, w.UnitCost, step.Before, step.Probability, step.After - step.Before - step.Probability, step.After, step.GoldValue})
 		if step.After > step.Before {
-			flowers = append(flowers, []any{platform.ID(), s.User, s.Edition, w.Round, w.ID, no, w.Pool, step.After - step.Before, step.After})
+			id, err := s.NewID(s.Ctx)
+			if err != nil {
+				return err
+			}
+			flowers = append(flowers, []any{id, s.User, s.Edition, w.Round, w.ID, no, w.Pool, step.After - step.Before, step.After})
 		}
 	}
 

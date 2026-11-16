@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"activity/pkg/platform/testid"
 	"context"
 	"database/sql"
 	"errors"
@@ -21,7 +22,7 @@ func TestOutboxFailureDoesNotStarveLaterEvents(t *testing.T) {
 	}
 	defer db.Close()
 	ctx := context.Background()
-	first, second := fmt.Sprint(ID()), fmt.Sprint(ID())
+	first, second := fmt.Sprint(testid.Next()), fmt.Sprint(testid.Next())
 	for _, id := range []string{first, second} {
 		_, err = db.ExecContext(ctx, `INSERT INTO outbox_event(event_id,event_type,aggregate_id,payload) VALUES(?,'ReviewTest.v1',1,JSON_OBJECT())`, id)
 		if err != nil {

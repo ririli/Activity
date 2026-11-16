@@ -13,7 +13,10 @@ import (
 	"time"
 )
 
-type HourlyStore struct{ DB *sql.DB }
+type HourlyStore struct {
+	DB    *sql.DB
+	NewID func(context.Context) (uint64, error)
+}
 
 func (s HourlyStore) ScheduleHourly(ctx context.Context, editions []hourly.Edition) (time.Time, error) {
 	var now, next time.Time
@@ -56,12 +59,15 @@ func (s HourlyStore) ScheduleHourly(ctx context.Context, editions []hourly.Editi
 }
 
 func (s HourlyStore) enqueueBarrier(ctx context.Context, edition string, cutoff int64, previous sql.NullInt64) error {
+	id, err := s.NewID(ctx)
+	if err != nil {
+		return err
+	}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	id := platform.ID()
 	result, err := tx.ExecContext(ctx, `INSERT INTO hourly_settlement(settlement_id,edition_id,cutoff_sec,previous_cutoff_sec) VALUES(?,?,?,?)
 		ON DUPLICATE KEY UPDATE cutoff_sec=hourly_settlement.cutoff_sec`, id, edition, cutoff, previous)
 	if err != nil {

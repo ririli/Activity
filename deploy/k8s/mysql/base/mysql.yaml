@@ -4,19 +4,19 @@ metadata:
   name: "mysql"
   namespace: "activity"
   labels:
-    app.kubernetes.io/name: "mysql"
+    app.kubernetes.io/name: "mysql-service"
     app.kubernetes.io/part-of: "activity"
 spec:
   serviceName: "mysql"
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: "mysql"
+      app.kubernetes.io/name: "mysql-service"
       app.kubernetes.io/part-of: "activity"
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: "mysql"
+        app.kubernetes.io/name: "mysql-service"
         app.kubernetes.io/part-of: "activity"
     spec:
       automountServiceAccountToken: false
@@ -130,12 +130,12 @@ metadata:
   name: "mysql"
   namespace: "activity"
   labels:
-    app.kubernetes.io/name: "mysql"
+    app.kubernetes.io/name: "mysql-service"
     app.kubernetes.io/part-of: "activity"
 spec:
   type: "ClusterIP"
   selector:
-    app.kubernetes.io/name: "mysql"
+    app.kubernetes.io/name: "mysql-service"
     app.kubernetes.io/part-of: "activity"
   ports:
     -

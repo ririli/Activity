@@ -59,6 +59,9 @@ func intEnv(key string, fallback int) int {
 func main() {
 	db := platform.OpenDB()
 	defer db.Close()
+	ids, closeIDs, err := platform.OpenIDs()
+	platform.Must(err)
+	defer closeIDs()
 	r := platform.Redis()
 	defer r.Close()
 	dummy, e := security.HashPassword(platform.Random())
@@ -77,7 +80,7 @@ func main() {
 	}
 	limiter := ratelimit.NewRedis()
 	defer limiter.Close()
-	s := &application.Service{Repo: store.Repository{DB: db}, Access: signer("access", "activity-api"), Refresh: signer("refresh", "identity-refresh"), Limiter: limit.NewLimiter(limiter.Client, platform.Env("REGISTER_IP_WHITELIST", "")), Revocations: revocations, HashSlots: make(chan struct{}, 4), DummyHash: dummy}
+	s := &application.Service{Repo: store.Repository{DB: db}, Access: signer("access", "activity-api"), Refresh: signer("refresh", "identity-refresh"), Limiter: limit.NewLimiter(limiter.Client, platform.Env("REGISTER_IP_WHITELIST", "")), Revocations: revocations, HashSlots: make(chan struct{}, 4), DummyHash: dummy, NewID: ids.Next, NewUserID: ids.NextUser}
 
 	lis, e := net.Listen("tcp", platform.Env("GRPC_ADDR", ":9090"))
 	platform.Must(e)

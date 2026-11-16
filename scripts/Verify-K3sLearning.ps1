@@ -18,7 +18,7 @@ function Check([bool]$Success, [string]$Name) {
     $checks.Add($Name); Write-Output "PASS $Name"
 }
 function Sql([string]$Query) {
-    $result = K -n activity exec mysql-0 '--' sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -N -e "$1"' _ $Query
+    $result = K -n activity exec mysql-activity-0 '--' sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -N -e "$1"' _ $Query
     return ($result -join "`n")
 }
 function Eventually([scriptblock]$Action, [string]$Name, [int]$Seconds=90) {
@@ -92,8 +92,8 @@ if (-not $SkipRecovery) {
     } 'Deployment replaces deleted identity Pod'
     Check $true 'Deployment self healing with persistent session'
     $before = Sql "SELECT gold_balance,petal_balance,ledger_seq FROM activity_core.wallet WHERE user_id=$user;"
-    K -n activity delete pod mysql-0
-    K -n activity wait --for=condition=Ready pod/mysql-0 --timeout=180s
+    K -n activity delete pod mysql-activity-0
+    K -n activity wait --for=condition=Ready pod/mysql-activity-0 --timeout=180s
     $after = Sql "SELECT gold_balance,petal_balance,ledger_seq FROM activity_core.wallet WHERE user_id=$user;"
     Check ($before -eq $after) 'StatefulSet recreation preserves wallet on PVC'
     Eventually { return [bool](Api GET "/api/activity/v1/records/state?edition_id=$edition" $null $token) } 'API recovers after MySQL restart'

@@ -14,6 +14,10 @@ func (s *Repository) LoadWallet() (domain.Wallet, error) {
 	return w, err
 }
 func (s *Repository) ApplyChange(c app.Change) error {
+	id, err := s.NewID(s.Ctx)
+	if err != nil {
+		return err
+	}
 	col := "petal_balance"
 	if c.Asset == domain.Gold {
 		col = "gold_balance"
@@ -29,6 +33,6 @@ func (s *Repository) ApplyChange(c app.Change) error {
 	if n != 1 {
 		return fault.New("ASSET_CONFLICT")
 	}
-	_, err = s.Tx.Exec(s.Ctx, fmt.Sprintf(`INSERT INTO %s(ledger_id,user_id,edition_id,asset_type,delta,balance_after,reason,biz_type,biz_id,entry_no,user_ledger_seq) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, platform.Shard("wallet_ledger", s.User)), platform.ID(), s.User, s.Edition, c.Asset, c.Delta, c.Balance, c.Reason, c.Kind, s.Biz, c.Entry, c.Ledger)
+	_, err = s.Tx.Exec(s.Ctx, fmt.Sprintf(`INSERT INTO %s(ledger_id,user_id,edition_id,asset_type,delta,balance_after,reason,biz_type,biz_id,entry_no,user_ledger_seq) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, platform.Shard("wallet_ledger", s.User)), id, s.User, s.Edition, c.Asset, c.Delta, c.Balance, c.Reason, c.Kind, s.Biz, c.Entry, c.Ledger)
 	return err
 }

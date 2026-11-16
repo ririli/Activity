@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"activity/pkg/platform/testid"
 	app "activity/services/activity-service/internal/application"
 	assets "activity/services/activity-service/internal/assets/application"
 	ad "activity/services/activity-service/internal/assets/domain"
@@ -105,7 +106,7 @@ func TestTransactionFactorySharesConnectionAndRollsBackEveryWrite(t *testing.T) 
 		db := sql.OpenDB(connector{state})
 		defer db.Close()
 		now := time.Now()
-		m := UnitOfWork{DB: db}
+		m := UnitOfWork{DB: db, NewID: testid.Generate}
 		err := m.Within(context.Background(), app.Scope{User: 7, Edition: 8, Biz: 9}, func(s app.Session) error {
 			a := s.Assets.(*astore.Repository)
 			l := s.Lottery.(*lstore.Repository)
@@ -173,7 +174,7 @@ func TestCommitUnknownAndReadOnlyRollback(t *testing.T) {
 	state := &recordingDB{unknown: true}
 	db := sql.OpenDB(connector{state})
 	defer db.Close()
-	u := UnitOfWork{DB: db}
+	u := UnitOfWork{DB: db, NewID: testid.Generate}
 	if err := u.Within(context.Background(), app.Scope{}, func(app.Session) error { return nil }); !errors.Is(err, fault.ErrCommitUnknown) {
 		t.Fatalf("unknown outcome lost %v", err)
 	}

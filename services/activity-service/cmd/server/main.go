@@ -19,10 +19,13 @@ import (
 func main() {
 	db := platform.OpenDB()
 	defer db.Close()
+	ids, closeIDs, err := platform.OpenIDs()
+	platform.Must(err)
+	defer closeIDs()
 	redis := platform.Redis()
 	defer redis.Close()
 	notify := make(chan []byte, 1024)
-	service := app.Service{UoW: store.UnitOfWork{DB: db}, Lock: locks.Redis{Client: redis}, Effects: effects.Effects{Notify: notify}, Queries: &store.Queries{DB: db}, Runtime: app.Runtime{NewID: platform.ID, Now: time.Now, Random: lottery.Random}}
+	service := app.Service{UoW: store.UnitOfWork{DB: db, NewID: ids.Next}, Lock: locks.Redis{Client: redis}, Effects: effects.Effects{Notify: notify}, Queries: &store.Queries{DB: db}, Runtime: app.Runtime{NewID: ids.Next, Now: time.Now, Random: lottery.Random}}
 	tasks := store.TaskStore{DB: db}
 	settlement := worker.Settlement{Workflow: app.SettlementWorker{Store: tasks, Exec: service, Ranking: ranking.Client{URL: platform.Env("RANKING_URL", "http://localhost:8083")}, Bootstrap: service, Batch: tasks.Batch(), Disabled: platform.Env("SETTLEMENT_ENABLED", "true") == "false"}}
 	consumers := messaging.Consumers{App: service}
@@ -31,7 +34,7 @@ func main() {
 	defer limiter.Close()
 	g := platform.Router(db, redis)
 	httpapi.Routes(g, service, limiter)
-	httpapi.HourlyRoutes(g, app.HourlyService{Queries: &store.Queries{DB: db}, UoW: service.UoW, NewID: platform.ID})
+	httpapi.HourlyRoutes(g, app.HourlyService{Queries: &store.Queries{DB: db}, UoW: service.UoW, NewID: ids.Next})
 	platform.Run(g, func(ctx context.Context) {
 		go platform.Dispatch(ctx, db)
 		go settlement.Run(ctx)

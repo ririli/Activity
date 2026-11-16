@@ -75,7 +75,7 @@ spec:
               name: "MYSQL_DSN"
               valueFrom:
                 secretKeyRef:
-                  name: "activity-db"
+                  name: "activity-split-db"
                   key: "MYSQL_DSN"
           securityContext:
             allowPrivilegeEscalation: false

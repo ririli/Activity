@@ -1,15 +1,14 @@
 package redis
 
 import (
+	"activity/pkg/platform/testid"
+	"activity/services/ranking-service/internal/ranking/domain"
 	"context"
 	"fmt"
+	rdb "github.com/redis/go-redis/v9"
 	"os"
 	"sync"
 	"testing"
-
-	"activity/pkg/platform"
-	"activity/services/ranking-service/internal/ranking/domain"
-	rdb "github.com/redis/go-redis/v9"
 )
 
 func TestAtomicRanking(t *testing.T) {
@@ -20,7 +19,7 @@ func TestAtomicRanking(t *testing.T) {
 	ctx := context.Background()
 	client := rdb.NewClient(&rdb.Options{Addr: addr})
 	defer client.Close()
-	edition := fmt.Sprint(platform.ID())
+	edition := fmt.Sprint(testid.Next())
 	cache := &Cache{Client: client, LoadBounds: func(context.Context, string) (Bounds, error) {
 		return Bounds{100, 1000}, nil
 	}}

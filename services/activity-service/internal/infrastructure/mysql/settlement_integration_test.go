@@ -1,7 +1,7 @@
 package mysql
 
 import (
-	"activity/pkg/platform"
+	"activity/pkg/platform/testid"
 	app "activity/services/activity-service/internal/application"
 	"activity/services/activity-service/internal/fault"
 	"context"
@@ -33,11 +33,11 @@ func TestRankingAwardReplayGrantsOnce(t *testing.T) {
 	defer db.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	user, award := platform.ID(), platform.ID()
+	user, award := testid.Next(), testid.Next()
 	if _, err := db.ExecContext(ctx, `INSERT INTO wallet(user_id) VALUES(?)`, user); err != nil {
 		t.Fatal(err)
 	}
-	s := app.Service{UoW: UnitOfWork{DB: db}, Runtime: app.Runtime{NewID: platform.ID}}
+	s := app.Service{UoW: UnitOfWork{DB: db, NewID: testid.Generate}, Runtime: app.Runtime{NewID: testid.Generate}}
 	cmd := app.RankingAwardCommand{User: fmt.Sprint(user), Edition: "1", Award: fmt.Sprint(award), Item: "1323", Name: "title", Quantity: 1}
 	for i := 0; i < 2; i++ {
 		if err := s.GrantRankingAward(ctx, cmd); err != nil {
@@ -67,7 +67,7 @@ func TestStaleSettlementCannotFailEdition(t *testing.T) {
 	}
 	defer db.Close()
 	ctx := context.Background()
-	edition := platform.ID()
+	edition := testid.Next()
 	_, err = db.ExecContext(ctx, `INSERT INTO activity_edition(edition_id,activity_code,name,starts_at,ends_at,status,active_rule_version,settlement_status) VALUES(?,'review','review',UTC_TIMESTAMP()-INTERVAL 2 HOUR,UTC_TIMESTAMP()-INTERVAL 1 HOUR,'ENDED',1,'RUNNING')`, edition)
 	if err != nil {
 		t.Fatal(err)
@@ -108,11 +108,11 @@ func TestMutationSeesCommitAfterEarlierRead(t *testing.T) {
 	}
 	defer db.Close()
 	ctx := context.Background()
-	user, order := platform.ID(), platform.ID()
+	user, order := testid.Next(), testid.Next()
 	if _, err = db.ExecContext(ctx, `INSERT INTO wallet(user_id) VALUES(?)`, user); err != nil {
 		t.Fatal(err)
 	}
-	err = (UnitOfWork{DB: db}).Within(ctx, app.Scope{User: user, Edition: 1}, func(s app.Session) error {
+	err = (UnitOfWork{DB: db, NewID: testid.Generate}).Within(ctx, app.Scope{User: user, Edition: 1}, func(s app.Session) error {
 		if _, _, _, _, _, err := s.Assets.FindPurchase("snapshot-test"); !errors.Is(err, fault.ErrNotFound) {
 			return fmt.Errorf("first read: %v", err)
 		}

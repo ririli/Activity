@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+nameSuffix: -identity
+resources:
+  - ../base
+labels:
+  - pairs:
+      database-service: identity
+    includeSelectors: true
+patches:
+  - target:
+      kind: StatefulSet
+      name: mysql
+    patch: |-
+      - op: replace
+        path: /spec/serviceName
+        value: mysql-identity
+      - op: replace
+        path: /spec/template/spec/containers/0/env/0/valueFrom/secretKeyRef/name
+        value: mysql-identity-root

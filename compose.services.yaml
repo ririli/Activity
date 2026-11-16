@@ -14,25 +14,22 @@ x-common: &common
     RANKING_URL: http://ranking:8080
     APP_ENV: local
     RATE_LIMIT_MODE: ${RATE_LIMIT_MODE:-enforce}
+    SNOWFLAKE_CLOCK_WAIT: ${SNOWFLAKE_CLOCK_WAIT:-10ms}
     TRUSTED_PROXIES: ${PROXY_IP:-172.29.240.10}/32
     ACCESS_PUBLIC_KEY_FILE: /keys/access.pub
-  depends_on:
-    mysql: {condition: service_healthy}
+  depends_on: &shared-dependencies
     redis: {condition: service_healthy}
     rabbitmq: {condition: service_healthy}
 services:
-  mysql:
-    volumes:
-      - ./services/activity-service/migrations/003_ranking_projection.sql:/docker-entrypoint-initdb.d/022_core_projection.sql:ro
-      - ./services/activity-service/migrations/004_settlement_scheduling.sql:/docker-entrypoint-initdb.d/023_activity_settlement.sql:ro
-      - ./services/activity-service/migrations/005_hourly_ranking.sql:/docker-entrypoint-initdb.d/024_activity_hourly.sql:ro
-      - ./deploy/local/mysql/090_app_users.sql:/docker-entrypoint-initdb.d/090_users.sql:ro
   identity:
     <<: *common
+    depends_on:
+      <<: *shared-dependencies
+      mysql-identity: {condition: service_healthy}
     build: {context: ., args: {SERVICE: identity-service}}
     environment:
       <<: *env
-      MYSQL_DSN: identity_app:dev-local-identity@tcp(mysql:3306)/activity_identity
+      MYSQL_DSN: identity_app:dev-local-identity@tcp(mysql-identity:3306)/activity_identity
       NODE_ID: 1
       RATE_LIMIT_IDENTITY_ME_RATE: ${RATE_LIMIT_IDENTITY_ME_RATE:-5}
       RATE_LIMIT_IDENTITY_ME_CAPACITY: ${RATE_LIMIT_IDENTITY_ME_CAPACITY:-10}
@@ -49,10 +46,13 @@ services:
       - ./.local/keys/refresh.seed:/keys/refresh.seed:ro
   activity:
     <<: *common
+    depends_on:
+      <<: *shared-dependencies
+      mysql-activity: {condition: service_healthy}
     build: {context: ., args: {SERVICE: activity-service}}
     environment:
       <<: *env
-      MYSQL_DSN: core_app:dev-local-core@tcp(mysql:3306)/activity_core
+      MYSQL_DSN: core_app:dev-local-core@tcp(mysql-activity:3306)/activity_core
       NODE_ID: 2
       RATE_LIMIT_ACTIVITY_QUERY_RATE: ${RATE_LIMIT_ACTIVITY_QUERY_RATE:-10}
       RATE_LIMIT_ACTIVITY_QUERY_CAPACITY: ${RATE_LIMIT_ACTIVITY_QUERY_CAPACITY:-30}
@@ -64,11 +64,11 @@ services:
     <<: *common
     build: {context: ., args: {SERVICE: ranking-service}}
     depends_on:
-      mysql: {condition: service_healthy}
+      mysql-ranking: {condition: service_healthy}
       rabbitmq: {condition: service_healthy}
     environment:
       <<: *env
-      MYSQL_DSN: ranking_app:dev-local-ranking@tcp(mysql:3306)/activity_ranking
+      MYSQL_DSN: ranking_app:dev-local-ranking@tcp(mysql-ranking:3306)/activity_ranking
       NODE_ID: 3
       RANKING_REDIS_SHARD_ADDRS: ${RANKING_REDIS_SHARD_ADDRS:-}
       RATE_LIMIT_RANKING_BOARD_RATE: ${RATE_LIMIT_RANKING_BOARD_RATE:-2}

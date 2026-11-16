@@ -3,6 +3,7 @@ package mysql
 import (
 	"activity/pkg/hourly"
 	"activity/pkg/platform"
+	"activity/pkg/platform/testid"
 	app "activity/services/activity-service/internal/application"
 	"context"
 	"database/sql"
@@ -27,7 +28,7 @@ func TestHourlySealingAndGrantReplay(t *testing.T) {
 	defer db.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	edition, user := platform.ID(), platform.ID()
+	edition, user := testid.Next(), testid.Next()
 	cutoff := time.Now().UTC().Truncate(time.Hour)
 	window := hourly.Window{Edition: fmt.Sprint(edition), Cutoff: cutoff.Unix()}
 	shard, lane := hourly.Shard(user), hourly.Lane(user)
@@ -52,7 +53,7 @@ func TestHourlySealingAndGrantReplay(t *testing.T) {
 			return err
 		}
 		o := &outbox{ctx: ctx, tx: tx, position: hourly.Position{Cutoff: window.Cutoff, Shard: shard, Lane: lane}}
-		err := o.Append(app.Event{ID: fmt.Sprint(platform.ID()), Type: code, Payload: platform.JSON(map[string]string{"user_id": fmt.Sprint(user)})}, user, edition)
+		err := o.Append(app.Event{ID: fmt.Sprint(testid.Next()), Type: code, Payload: platform.JSON(map[string]string{"user_id": fmt.Sprint(user)})}, user, edition)
 		if err != nil {
 			return err
 		}
@@ -111,8 +112,8 @@ func TestHourlySealingAndGrantReplay(t *testing.T) {
 	if err := json.Unmarshal(page[0].Payload, &payload); err != nil || payload.Hourly.Seq != 1 {
 		t.Fatalf("replay position: %+v %v", payload, err)
 	}
-	service := app.HourlyService{Queries: queries, UoW: UnitOfWork{DB: db}, NewID: platform.ID}
-	grant := hourly.Grant{Barrier: hourly.Barrier{Window: window, Settlement: fmt.Sprint(platform.ID())}, User: fmt.Sprint(user), Rank: 1}
+	service := app.HourlyService{Queries: queries, UoW: UnitOfWork{DB: db, NewID: testid.Generate}, NewID: testid.Generate}
+	grant := hourly.Grant{Barrier: hourly.Barrier{Window: window, Settlement: fmt.Sprint(testid.Next())}, User: fmt.Sprint(user), Rank: 1}
 	var calls sync.WaitGroup
 	receipts := make([]hourly.Receipt, 8)
 	for i := range receipts {

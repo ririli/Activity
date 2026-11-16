@@ -1,10 +1,10 @@
 apiVersion: "batch/v1"
 kind: "Job"
 metadata:
-  name: "activity-schema-v1"
+  name: "mysql-DB_SERVICE-schema-SCHEMA_VERSION"
   namespace: "activity"
   labels:
-    app.kubernetes.io/name: "activity-schema-v1"
+    app.kubernetes.io/name: "mysql-DB_SERVICE-schema-SCHEMA_VERSION"
     app.kubernetes.io/part-of: "activity"
 spec:
   backoffLimit: 0
@@ -15,6 +15,7 @@ spec:
         app.kubernetes.io/name: "schema"
         app.kubernetes.io/part-of: "activity"
         activity-role: "database-job"
+        database-service: "DB_SERVICE"
     spec:
       automountServiceAccountToken: false
       securityContext:
@@ -33,13 +34,13 @@ spec:
           command:
             - "sh"
             - "-ec"
-            - "until mysql -h mysql -uroot -Nse 'SELECT 1'; do sleep 1; done; for f in /migrations/*.sql; do echo \"Applying $(basename \"$f\")\"; mysql -h mysql -uroot < \"$f\"; done; mysql -h mysql -uroot < /bootstrap/090_users.sql"
+            - "until mysql -h mysql-DB_SERVICE -uroot -Nse 'SELECT 1'; do sleep 1; done; for f in /migrations/*.sql; do echo \"Applying $(basename \"$f\")\"; mysql -h mysql-DB_SERVICE -uroot < \"$f\"; done; if [ -f /bootstrap/090_users.sql ]; then mysql -h mysql-DB_SERVICE -uroot < /bootstrap/090_users.sql; fi"
           env:
             -
               name: "MYSQL_PWD"
               valueFrom:
                 secretKeyRef:
-                  name: "mysql-root"
+                  name: "mysql-DB_SERVICE-root"
                   key: "password"
           resources:
             requests:
@@ -67,8 +68,9 @@ spec:
         -
           name: "migrations"
           configMap:
-            name: "db-migrations"
+            name: "mysql-DB_SERVICE-migrations-SCHEMA_VERSION"
         -
           name: "bootstrap"
           secret:
-            secretName: "db-users-bootstrap"
+            secretName: "mysql-DB_SERVICE-user-bootstrap-SCHEMA_VERSION"
+            optional: BOOTSTRAP_OPTIONAL

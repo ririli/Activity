@@ -28,7 +28,10 @@ func preview(s *work) (any, error) {
 		return nil, err
 	}
 	plan.Refund = 0
-	id = s.runtime.NewID()
+	id, err = s.newID()
+	if err != nil {
+		return nil, err
+	}
 	raw = encode(plan.Steps)
 	hash, err := lotteryapp.CanonicalHash(raw)
 	if err != nil {
@@ -81,7 +84,11 @@ func confirmPreview(s *work) (any, error) {
 		if err = s.Asset("PETAL", gap, "PREVIEW_TOP_UP_GRANT", "PREVIEW"); err != nil {
 			return nil, err
 		}
-		if err = s.session.Assets.InsertPreviewTopUpFor(p.ID, s.runtime.NewID(), "preview:"+fmt.Sprint(p.ID), gap*60, gap, s.progress.Version); err != nil {
+		orderID, err := s.newID()
+		if err != nil {
+			return nil, err
+		}
+		if err = s.session.Assets.InsertPreviewTopUpFor(p.ID, orderID, "preview:"+fmt.Sprint(p.ID), gap*60, gap, s.progress.Version); err != nil {
 			return nil, err
 		}
 	}

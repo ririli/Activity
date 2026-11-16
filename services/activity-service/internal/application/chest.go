@@ -42,7 +42,10 @@ func openChest(s *work) (any, error) {
 		return nil, err
 	}
 	p := choices[index]
-	id = s.runtime.NewID()
+	id, err = s.newID()
+	if err != nil {
+		return nil, err
+	}
 	grant, err = s.Grant(p, "CHEST", id, 1)
 	if err != nil {
 		return nil, err
